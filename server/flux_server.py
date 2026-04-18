@@ -110,6 +110,9 @@ Environment variables
 
   FLUX_TEXT_ENC_DIR         directory scanned by GET /text-encoders
                             default: C:\\UI\\Experimental-UI_Reit\\models\\text_encoder
+
+  FLUX_EMBEDDINGS_DIR       directory scanned by GET /embeddings
+                            default: C:\\UI\\Experimental-UI_Reit\\models\\Embeddings
 """
 
 from __future__ import annotations
@@ -144,6 +147,7 @@ _WAN2_BASE = r"C:\UI\Experimental-UI_Reit\models\WAN2-x"
 _ZIMAGE_BASE = r"C:\UI\Experimental-UI_Reit\models\ZImage"
 _VAE_BASE = r"C:\UI\Experimental-UI_Reit\models\VAE"
 _TEXT_ENC_BASE = r"C:\UI\Experimental-UI_Reit\models\text_encoder"
+_EMBEDDINGS_BASE = r"C:\UI\Experimental-UI_Reit\models\Embeddings"
 
 # ---------------------------------------------------------------------------
 # Configuration -- model directories
@@ -205,6 +209,7 @@ WAN2_DIR = Path(os.getenv("FLUX_WAN2_DIR", _WAN2_BASE))
 ZIMAGE_DIR = Path(os.getenv("FLUX_ZIMAGE_DIR", _ZIMAGE_BASE))
 VAE_DIR = Path(os.getenv("FLUX_VAE_DIR", _VAE_BASE))
 TEXT_ENC_DIR = Path(os.getenv("FLUX_TEXT_ENC_DIR", _TEXT_ENC_BASE))
+EMBEDDINGS_DIR = Path(os.getenv("FLUX_EMBEDDINGS_DIR", _EMBEDDINGS_BASE))
 
 # ---------------------------------------------------------------------------
 # FLUX VAE / latent constants
@@ -1637,6 +1642,55 @@ def _discover_text_encoders() -> dict:
     }
     return {"model_indexes": model_indexes, "encoders": encoders, "by_kind": by_kind}
 
+
+# ---------------------------------------------------------------------------
+# Embeddings catalog
+# ---------------------------------------------------------------------------
+
+_EMBEDDING_SUFFIXES = {".safetensors", ".pt", ".bin"}
+
+
+def _discover_embeddings() -> list[dict]:
+    """
+    Scan EMBEDDINGS_DIR for textual-inversion embedding files.
+
+    Recognised formats:
+      safetensors — .safetensors
+      pt          — PyTorch .pt files
+      bin         — HuggingFace .bin files
+
+    Returns a list of dicts sorted by name, each containing:
+      name      — stem of the filename
+      filename  — full filename
+      path      — absolute path string
+      format    — "safetensors" | "pt" | "bin"
+      size_mb   — file size in MB (None on error)
+    """
+    if not EMBEDDINGS_DIR.exists():
+        return []
+
+    results: list[dict] = []
+    for f in sorted(EMBEDDINGS_DIR.glob("*")):
+        if not f.is_file() or f.suffix.lower() not in _EMBEDDING_SUFFIXES:
+            continue
+        try:
+            size_mb = round(f.stat().st_size / 1_048_576, 1)
+        except OSError:
+            size_mb = None
+
+        fmt = f.suffix.lower().lstrip(".")
+
+        results.append({
+            "name": f.stem,
+            "filename": f.name,
+            "path": str(f),
+            "format": fmt,
+            "size_mb": size_mb,
+        })
+
+    results.sort(key=lambda m: m["name"].lower())
+    return results
+
 def _b64_to_pil(b64: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
 
@@ -1752,6 +1806,11 @@ async def health() -> dict:
             "dir": str(TEXT_ENC_DIR),
             "note": "GET /text-encoders for full list",
             **_discover_text_encoders()["by_kind"],
+        },
+        "embeddings": {
+            "dir": str(EMBEDDINGS_DIR),
+            "count": len(_discover_embeddings()),
+            "note": "GET /embeddings for full list",
         },
     }
 
@@ -1991,6 +2050,23 @@ async def text_encoders() -> dict:
     return {
         "dir": str(TEXT_ENC_DIR),
         **result,
+    }
+
+
+@app.get("/embeddings")
+async def embeddings() -> dict:
+    """
+    Return every textual-inversion embedding file found directly in EMBEDDINGS_DIR
+    (default: C:\\UI\\Experimental-UI_Reit\\models\\Embeddings).
+
+    Only the immediate contents of the directory are returned (non-recursive).
+    Override the scan root with the FLUX_EMBEDDINGS_DIR environment variable.
+    """
+    found = _discover_embeddings()
+    return {
+        "dir": str(EMBEDDINGS_DIR),
+        "total": len(found),
+        "embeddings": found,
     }
 
 
