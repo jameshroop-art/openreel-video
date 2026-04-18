@@ -1,4 +1,4 @@
-# OpenReel Video
+# OpenReel Video - localhost
 
 > **The open source CapCut alternative. Professional video editing in your browser. No uploads. No installs. 100% open source.**
 
