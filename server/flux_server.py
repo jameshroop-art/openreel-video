@@ -101,6 +101,9 @@ Environment variables
 
   FLUX_WAN2_DIR             directory scanned by GET /wan2-models
                             default: C:\\UI\\Experimental-UI_Reit\\models\\WAN2-x
+
+  FLUX_ZIMAGE_DIR           directory scanned by GET /zimage-models
+                            default: C:\\UI\\Experimental-UI_Reit\\models\\ZImage
 """
 
 from __future__ import annotations
