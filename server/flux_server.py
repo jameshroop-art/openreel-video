@@ -92,6 +92,9 @@ Environment variables
 
   FLUX_REACTOR_DIR          directory scanned by GET /reactor-models
                             default: C:\\UI\\Experimental-UI_Reit\\models\\Reactorplus
+
+  FLUX_REALESRGAN_DIR       directory scanned by GET /upscalers
+                            default: C:\\UI\\Experimental-UI_Reit\\models\\realesrgan
 """
 
 from __future__ import annotations
@@ -120,6 +123,7 @@ log = logging.getLogger(__name__)
 _BASE = r"C:\UI\Experimental-UI_Reit\models\Flux"
 _LORA_BASE = r"C:\UI\Experimental-UI_Reit\models\lora"
 _REACTOR_BASE = r"C:\UI\Experimental-UI_Reit\models\Reactorplus"
+_REALESRGAN_BASE = r"C:\UI\Experimental-UI_Reit\models\realesrgan"
 
 # ---------------------------------------------------------------------------
 # Configuration -- model directories
@@ -175,6 +179,7 @@ LORA_PATH = Path(
 LORA_SCALE: float = float(os.getenv("FLUX_LORA_SCALE", "1.0"))
 LORA_DIR = Path(os.getenv("FLUX_LORA_DIR", _LORA_BASE))
 REACTOR_DIR = Path(os.getenv("FLUX_REACTOR_DIR", _REACTOR_BASE))
+REALESRGAN_DIR = Path(os.getenv("FLUX_REALESRGAN_DIR", _REALESRGAN_BASE))
 
 # ---------------------------------------------------------------------------
 # FLUX VAE / latent constants
@@ -1035,6 +1040,90 @@ def _discover_reactor_assets() -> list[dict]:
     results.sort(key=lambda m: (m["kind"], m["name"].lower()))
     return results
 
+
+# ---------------------------------------------------------------------------
+# Real-ESRGAN upscaler catalog
+# ---------------------------------------------------------------------------
+
+# Scale-factor keywords → kind label (checked in order against lowercase filename stem)
+_ESRGAN_SCALE_RULES: list[tuple[str, str]] = [
+    ("x4",           "x4plus"),
+    ("x2",           "x2plus"),
+    ("discriminator", "discriminator"),
+]
+_ESRGAN_ANIME_KEYWORDS = {"anime", "animation"}
+_ESRGAN_SUFFIXES = {".pth", ".onnx"}
+
+
+def _discover_realesrgan_models() -> list[dict]:
+    """
+    Recursively scan REALESRGAN_DIR for Real-ESRGAN weight files (.pth, .onnx)
+    and classify each one.
+
+    Classification rules (in order, applied to the lowercase filename stem):
+      x4plus_anime  — scale x4 AND filename contains an anime keyword
+      x4plus        — filename contains "x4"
+      x2plus        — filename contains "x2"
+      discriminator — filename contains "discriminator"
+      other         — everything else
+
+    Returns a list of dicts sorted by kind then name, each containing:
+      name     — stem of the filename
+      filename — full filename
+      path     — absolute path string
+      kind     — "x4plus_anime" | "x4plus" | "x2plus" | "discriminator" | "other"
+      format   — "onnx" | "pth"
+      size_mb  — file size in MB (None on error)
+    """
+    if not REALESRGAN_DIR.exists():
+        return []
+
+    results = []
+    for f in sorted(REALESRGAN_DIR.rglob("*")):
+        if f.suffix.lower() not in _ESRGAN_SUFFIXES:
+            continue
+        if not f.is_file():
+            continue
+
+        try:
+            size_mb = round(f.stat().st_size / 1_048_576, 1)
+        except OSError:
+            size_mb = None
+
+        stem_lower = f.stem.lower()
+        has_x4 = "x4" in stem_lower
+        has_anime = bool(_ESRGAN_ANIME_KEYWORDS & set(stem_lower.split("_")))
+
+        if has_x4 and has_anime:
+            kind = "x4plus_anime"
+        elif has_x4:
+            kind = "x4plus"
+        elif "x2" in stem_lower:
+            kind = "x2plus"
+        elif "discriminator" in stem_lower:
+            kind = "discriminator"
+        else:
+            kind = "other"
+
+        results.append(
+            {
+                "name": f.stem,
+                "filename": f.name,
+                "path": str(f),
+                "kind": kind,
+                "format": "onnx" if f.suffix.lower() == ".onnx" else "pth",
+                "size_mb": size_mb,
+            }
+        )
+
+    results.sort(key=lambda m: (m["kind"], m["name"].lower()))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
 def _b64_to_pil(b64: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
 
@@ -1115,6 +1204,14 @@ async def health() -> dict:
                 for k in ("classifier", "embedding", "checkpoint", "diffusers", "other")
             },
         },
+        "upscalers": {
+            "dir": str(REALESRGAN_DIR),
+            "note": "GET /upscalers for full list",
+            **{
+                k: sum(1 for m in _discover_realesrgan_models() if m["kind"] == k)
+                for k in ("x4plus_anime", "x4plus", "x2plus", "discriminator", "other")
+            },
+        },
     }
 
 
@@ -1151,6 +1248,58 @@ async def loras() -> dict:
         "dir": str(LORA_DIR),
         "total": len(found),
         "loras": found,
+    }
+
+
+@app.get("/reactor-models")
+async def reactor_models() -> dict:
+    """
+    Return every model weight file found under REACTOR_DIR
+    (default: C:\\UI\\Experimental-UI_Reit\\models\\Reactorplus), classified by type.
+
+    Kinds:
+      classifier  — face attractiveness / detection classifier (attractive_faces_celebs_detection/)
+      embedding   — textual inversion learned embeddings (learned_embeds*.bin)
+      checkpoint  — training snapshots inside checkpoint-*/ subdirectories
+      diffusers   — diffusers pipeline component (unet/, vae/, text_encoder/, ...)
+      other       — unclassified weight files
+
+    Override the scan root with the FLUX_REACTOR_DIR environment variable.
+    """
+    found = _discover_reactor_assets()
+    return {
+        "dir": str(REACTOR_DIR),
+        "total": len(found),
+        "by_kind": {
+            k: [m for m in found if m["kind"] == k]
+            for k in ("classifier", "embedding", "checkpoint", "diffusers", "other")
+        },
+    }
+
+
+@app.get("/upscalers")
+async def upscalers() -> dict:
+    """
+    Return every Real-ESRGAN weight file found under REALESRGAN_DIR
+    (default: C:\\UI\\Experimental-UI_Reit\\models\\realesrgan), classified by variant.
+
+    Kinds:
+      x4plus_anime  — 4× upscaler tuned for anime/animation content
+      x4plus        — 4× upscaler for general photographic content
+      x2plus        — 2× upscaler
+      discriminator — GAN discriminator (training use only)
+      other         — unclassified weight files
+
+    Override the scan root with the FLUX_REALESRGAN_DIR environment variable.
+    """
+    found = _discover_realesrgan_models()
+    return {
+        "dir": str(REALESRGAN_DIR),
+        "total": len(found),
+        "by_kind": {
+            k: [m for m in found if m["kind"] == k]
+            for k in ("x4plus_anime", "x4plus", "x2plus", "discriminator", "other")
+        },
     }
 
 
