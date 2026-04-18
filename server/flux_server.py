@@ -98,6 +98,9 @@ Environment variables
 
   FLUX_SD_DIR               directory scanned by GET /sd-models
                             default: C:\\UI\\Experimental-UI_Reit\\models\\Stable-diffusion
+
+  FLUX_WAN2_DIR             directory scanned by GET /wan2-models
+                            default: C:\\UI\\Experimental-UI_Reit\\models\\WAN2-x
 """
 
 from __future__ import annotations
@@ -128,6 +131,7 @@ _LORA_BASE = r"C:\UI\Experimental-UI_Reit\models\lora"
 _REACTOR_BASE = r"C:\UI\Experimental-UI_Reit\models\Reactorplus"
 _REALESRGAN_BASE = r"C:\UI\Experimental-UI_Reit\models\realesrgan"
 _SD_BASE = r"C:\UI\Experimental-UI_Reit\models\Stable-diffusion"
+_WAN2_BASE = r"C:\UI\Experimental-UI_Reit\models\WAN2-x"
 
 # ---------------------------------------------------------------------------
 # Configuration -- model directories
@@ -185,6 +189,7 @@ LORA_DIR = Path(os.getenv("FLUX_LORA_DIR", _LORA_BASE))
 REACTOR_DIR = Path(os.getenv("FLUX_REACTOR_DIR", _REACTOR_BASE))
 REALESRGAN_DIR = Path(os.getenv("FLUX_REALESRGAN_DIR", _REALESRGAN_BASE))
 SD_DIR = Path(os.getenv("FLUX_SD_DIR", _SD_BASE))
+WAN2_DIR = Path(os.getenv("FLUX_WAN2_DIR", _WAN2_BASE))
 
 # ---------------------------------------------------------------------------
 # FLUX VAE / latent constants
@@ -1126,8 +1131,235 @@ def _discover_realesrgan_models() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Stable Diffusion pipeline catalog
+# ---------------------------------------------------------------------------
+
+_SD_PIPELINE_COMPONENTS = {
+    "unet", "vae", "vae_1_0", "vae_encoder", "vae_decoder",
+    "text_encoder", "text_encoder_2", "text_encoder_3", "text_encoders",
+    "tokenizer", "tokenizer_2", "tokenizer_3",
+    "transformer", "image_encoder", "safety_checker",
+    "feature_extractor", "scheduler",
+}
+_SD_WEIGHT_SUFFIXES = {".safetensors", ".ckpt", ".bin", ".pth"}
+
+
+def _sd_variant(path_parts: list[str]) -> str:
+    """Identify the SD architecture variant from directory path parts."""
+    joined = " ".join(p.lower() for p in path_parts)
+    if any(k in joined for k in ("sv3d", "sv4d")):
+        return "sv3d_sv4d"
+    if any(k in joined for k in ("svd", "stable-video", "img2vid", "stable_video")):
+        return "svd"
+    if any(k in joined for k in ("3.5", "sd3", "sd35", "stable-diffusion-3")):
+        return "sd3"
+    if any(k in joined for k in ("xl", "sdxl")):
+        return "sdxl"
+    if any(k in joined for k in ("v1-5", "sd1", "sd15", "stable-diffusion-v1")):
+        return "sd1.5"
+    if any(k in joined for k in ("v2", "sd2", "sd20", "sd21")):
+        return "sd2.x"
+    return "other"
+
+
+def _discover_sd_pipelines() -> list[dict]:
+    """
+    Scan SD_DIR for diffusers pipelines (detected by model_index.json) and return
+    a summary of each including variant, present components, and any root-level
+    standalone checkpoint files (.ckpt / .safetensors).
+
+    Returns a list sorted by variant then pipeline name.
+    """
+    if not SD_DIR.exists():
+        return []
+
+    pipelines: list[dict] = []
+    seen: set[Path] = set()
+
+    for idx_file in sorted(SD_DIR.rglob("model_index.json")):
+        pipeline_dir = idx_file.parent
+        if pipeline_dir in seen:
+            continue
+        seen.add(pipeline_dir)
+
+        rel_parts = list(pipeline_dir.relative_to(SD_DIR).parts)
+        variant = _sd_variant(rel_parts)
+
+        components = sorted(
+            p.name for p in pipeline_dir.iterdir()
+            if p.is_dir() and p.name.lower() in _SD_PIPELINE_COMPONENTS
+        )
+
+        checkpoints: list[dict] = []
+        for f in sorted(pipeline_dir.glob("*")):
+            if f.suffix.lower() in {".safetensors", ".ckpt"} and f.is_file():
+                try:
+                    size_mb = round(f.stat().st_size / 1_048_576, 1)
+                except OSError:
+                    size_mb = None
+                checkpoints.append({"filename": f.name, "size_mb": size_mb, "format": f.suffix.lstrip(".")})
+
+        pipelines.append({
+            "name": pipeline_dir.name,
+            "path": str(pipeline_dir),
+            "variant": variant,
+            "components": components,
+            "checkpoints": checkpoints,
+        })
+
+    pipelines.sort(key=lambda p: (p["variant"], p["name"].lower()))
+    return pipelines
+
+
+def _discover_sd_extensions() -> list[dict]:
+    """
+    Scan SD_DIR/extensions/ for .pth model files used by ControlNet, DreamBooth,
+    Inpainting, and similar SD extensions.
+    """
+    ext_dir = SD_DIR / "extensions"
+    if not ext_dir.exists():
+        return []
+
+    results: list[dict] = []
+    for pth in sorted(ext_dir.rglob("*.pth")):
+        try:
+            size_mb = round(pth.stat().st_size / 1_048_576, 1)
+        except OSError:
+            size_mb = None
+        results.append({
+            "name": pth.stem,
+            "filename": pth.name,
+            "path": str(pth),
+            "extension": pth.parent.name,
+            "size_mb": size_mb,
+        })
+    return results
+
+
+# ---------------------------------------------------------------------------
+# WAN2 video generation model catalog
+# ---------------------------------------------------------------------------
+
+_WAN2_COMPONENTS = {
+    "text_encoder", "text_encoder_2", "tokenizer", "tokenizer_2",
+    "transformer", "vae", "scheduler", "image_encoder",
+}
+_WAN2_WEIGHT_SUFFIXES = {".safetensors", ".pth"}
+
+
+def _wan2_meta(name: str) -> dict:
+    """Classify a WAN2 model directory name into task / version / size."""
+    nl = name.lower()
+
+    if "ti2v" in nl:
+        task = "text_image_to_video"
+    elif "i2v" in nl:
+        task = "image_to_video"
+    elif "t2v" in nl:
+        task = "text_to_video"
+    elif "lora" in nl:
+        task = "lora"
+    elif nl in ("high_noise_model", "low_noise_model"):
+        task = "noise_model"
+    else:
+        task = "other"
+
+    if "14b" in nl or "a14b" in nl:
+        size = "14b"
+    elif "a7b" in nl or "7b" in nl:
+        size = "7b"
+    elif "5b" in nl:
+        size = "5b"
+    elif "1.3b" in nl:
+        size = "1.3b"
+    else:
+        size = None
+
+    if "2.2" in nl:
+        version = "2.2"
+    elif "2.1" in nl:
+        version = "2.1"
+    else:
+        version = None
+
+    return {"task": task, "size": size, "version": version}
+
+
+def _discover_wan2_models() -> list[dict]:
+    """
+    Scan WAN2_DIR (one level deep) for Wan2.x video generation model directories.
+
+    Each entry contains:
+      name              — directory name
+      path              — absolute path string
+      format            — "diffusers" (has model_index.json) | "native" (has config.json
+                          or configuration.json) | "unknown"
+      task              — "text_to_video" | "image_to_video" | "text_image_to_video"
+                          | "noise_model" | "lora" | "other"
+      version           — "2.1" | "2.2" | null
+      size              — "1.3b" | "5b" | "7b" | "14b" | null
+      components        — list of standard diffusers component subdirectory names present
+      root_weights      — standalone weight files (.pth / .safetensors) at the directory root
+      transformer_shards— number of sharded safetensors in the transformer/ subdir
+    """
+    if not WAN2_DIR.exists():
+        return []
+
+    results: list[dict] = []
+    for d in sorted(WAN2_DIR.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+
+        meta = _wan2_meta(d.name)
+
+        if (d / "model_index.json").exists():
+            fmt = "diffusers"
+        elif (d / "config.json").exists() or (d / "configuration.json").exists():
+            fmt = "native"
+        else:
+            fmt = "unknown"
+
+        root_weights: list[dict] = []
+        for f in sorted(d.iterdir()):
+            if f.suffix.lower() in _WAN2_WEIGHT_SUFFIXES and f.is_file():
+                try:
+                    size_mb = round(f.stat().st_size / 1_048_576, 1)
+                except OSError:
+                    size_mb = None
+                root_weights.append({"filename": f.name, "size_mb": size_mb})
+
+        components = sorted(
+            p.name for p in d.iterdir()
+            if p.is_dir() and p.name in _WAN2_COMPONENTS
+        )
+
+        transformer_dir = d / "transformer"
+        transformer_shards = (
+            len(list(transformer_dir.glob("*.safetensors")))
+            if transformer_dir.exists() else 0
+        )
+
+        results.append({
+            "name": d.name,
+            "path": str(d),
+            "format": fmt,
+            "task": meta["task"],
+            "version": meta["version"],
+            "size": meta["size"],
+            "components": components,
+            "root_weights": root_weights,
+            "transformer_shards": transformer_shards,
+        })
+
+    results.sort(key=lambda m: (m["task"], m["name"].lower()))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Utilities
-# ---------------------------------------------------------------------------(b64: str) -> Image.Image:
+# ---------------------------------------------------------------------------
+
+def _b64_to_pil(b64: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
 
 
@@ -1214,6 +1446,16 @@ async def health() -> dict:
                 k: sum(1 for m in _discover_realesrgan_models() if m["kind"] == k)
                 for k in ("x4plus_anime", "x4plus", "x2plus", "discriminator", "other")
             },
+        },
+        "sd_models": {
+            "dir": str(SD_DIR),
+            "pipelines": len(_discover_sd_pipelines()),
+            "note": "GET /sd-models for full list",
+        },
+        "wan2_models": {
+            "dir": str(WAN2_DIR),
+            "count": len(_discover_wan2_models()),
+            "note": "GET /wan2-models for full list",
         },
     }
 
@@ -1306,7 +1548,73 @@ async def upscalers() -> dict:
     }
 
 
-@app.post("/generate", response_model=ImageResponse)
+@app.get("/sd-models")
+async def sd_models() -> dict:
+    """
+    Return Stable Diffusion pipelines and extension models found under SD_DIR
+    (default: C:\\UI\\Experimental-UI_Reit\\models\\Stable-diffusion).
+
+    Pipelines are grouped by architecture variant:
+      sd1.5       — Stable Diffusion v1.5 family
+      sd2.x       — Stable Diffusion v2.x family
+      sd3         — Stable Diffusion 3.x family
+      sdxl        — Stable Diffusion XL
+      svd         — Stable Video Diffusion (img2vid)
+      sv3d_sv4d   — SV3D / SV4D multi-view video
+      other       — unclassified pipelines
+
+    Extensions lists .pth weight files found under extensions/.
+
+    Override the scan root with the FLUX_SD_DIR environment variable.
+    """
+    pipelines = _discover_sd_pipelines()
+    extensions = _discover_sd_extensions()
+    _variants = ("sd1.5", "sd2.x", "sd3", "sdxl", "svd", "sv3d_sv4d", "other")
+    return {
+        "dir": str(SD_DIR),
+        "pipelines": {
+            "total": len(pipelines),
+            "by_variant": {
+                v: [p for p in pipelines if p["variant"] == v]
+                for v in _variants
+            },
+        },
+        "extensions": {
+            "total": len(extensions),
+            "models": extensions,
+        },
+    }
+
+
+@app.get("/wan2-models")
+async def wan2_models() -> dict:
+    """
+    Return Wan2.x video generation model directories found under WAN2_DIR
+    (default: C:\\UI\\Experimental-UI_Reit\\models\\WAN2-x).
+
+    Tasks:
+      text_to_video        — T2V models (Wan2.1-T2V-*)
+      image_to_video       — I2V models (Wan2.2-I2V-*)
+      text_image_to_video  — TI2V models (Wan2.2-TI2V-*)
+      noise_model          — high_noise_model / low_noise_model directories
+      lora                 — LoRA collections (Wan2.2-LoRAs)
+      other                — unclassified directories (MoE variants, etc.)
+
+    Each entry includes format (diffusers | native | unknown), detected version,
+    size, present pipeline components, root weight files, and transformer shard count.
+
+    Override the scan root with the FLUX_WAN2_DIR environment variable.
+    """
+    found = _discover_wan2_models()
+    _tasks = ("text_to_video", "image_to_video", "text_image_to_video", "noise_model", "lora", "other")
+    return {
+        "dir": str(WAN2_DIR),
+        "total": len(found),
+        "by_task": {
+            t: [m for m in found if m["task"] == t]
+            for t in _tasks
+        },
+    }
 async def generate(req: GenerateRequest) -> ImageResponse:
     """Text-to-image.  model = schnell | dev | dev-uncensored"""
     seed = _random_seed(req.seed)
@@ -1418,5 +1726,16 @@ if __name__ == "__main__":
         log.info("  [rvc      ] %-45s  %.1f MB  index=%s", m["name"], m["size_mb"] or 0, m["has_index"])
     for m in _ext:
         log.info("  [extension] %-45s  %.1f MB", m["name"], m["size_mb"] or 0)
+    _sd_pipelines = _discover_sd_pipelines()
+    log.info("SD pipelines: %d total", len(_sd_pipelines))
+    for p in _sd_pipelines:
+        log.info("  [sd %-10s] %-40s  %d components  %d checkpoints",
+                 p["variant"], p["name"], len(p["components"]), len(p["checkpoints"]))
+    _wan2 = _discover_wan2_models()
+    log.info("WAN2 models: %d total", len(_wan2))
+    for m in _wan2:
+        log.info("  [wan2 %-8s] %-40s  fmt=%-10s  ver=%s  size=%s",
+                 m["task"][:8], m["name"], m["format"],
+                 m["version"] or "?", m["size"] or "?")
     log.info("=========================================================")
     uvicorn.run(app, host="127.0.0.1", port=8080, log_level="info")
