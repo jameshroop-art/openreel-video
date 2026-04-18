@@ -1,28 +1,71 @@
 """
 FLUX ONNX Local Inference Server
 =================================
-Runs at http://localhost:8080 and exposes two endpoints:
+Runs at http://localhost:8080 and exposes three endpoints:
 
-  POST /generate  — text-to-image via FLUX.1-schnell-onnx
-  POST /edit      — image editing / background removal via FLUX.1-Kontext-dev-onnx
+  POST /generate      — text-to-image via FLUX.1-schnell-onnx
+  POST /edit          — image editing / background removal via FLUX.1-Kontext-dev-onnx
   POST /detect-faces  — lightweight face bounding-box detection (used by auto-reframe)
+
+On-disk model layout (each component is a sub-directory containing model.onnx)
+-------------------------------------------------------------------------------
+  FLUX.1-schnell-onnx/
+    clip.opt/
+      model.onnx
+    t5.opt/
+      backbone.onnx_data
+      model.onnx
+    t5-fp8.opt/
+      backbone.onnx_data
+      model.onnx
+    transformer.opt/
+      bf16/
+        backbone.onnx_data
+        model.onnx
+      fp4/
+        backbone.onnx_data
+        model.onnx
+      fp8/
+        backbone.onnx_data
+        model.onnx
+    vae.opt/
+      model.onnx
+
+  FLUX.1-Kontext-dev-onnx/   (same layout + vae_encoder.opt/)
+    clip.opt/model.onnx
+    t5.opt/model.onnx
+    t5-fp8.opt/model.onnx
+    transformer.opt/{precision}/model.onnx
+    vae.opt/model.onnx
+    vae_encoder.opt/model.onnx
+
+onnxruntime automatically resolves backbone.onnx_data sidecar files when they
+sit alongside model.onnx in the same directory — no extra configuration needed.
 
 Setup (Windows PowerShell)
 --------------------------
   pip install fastapi uvicorn[standard] onnxruntime pillow numpy
 
-  # If you have a CUDA GPU (recommended for FLUX):
+  # If you have a CUDA GPU (recommended — FLUX is very slow on CPU):
   pip install onnxruntime-gpu
 
 Run
 ---
   python server/flux_server.py
 
-Model paths are read from environment variables so you can override them
-without editing this file:
+Environment variables
+---------------------
+  FLUX_SCHNELL_DIR            Root directory of FLUX.1-schnell-onnx
+                              (default: C:\\UI\\Experimental-UI_Reit\\models\\Flux\\FLUX.1-schnell-onnx)
 
-  FLUX_SCHNELL_DIR   (default: C:\UI\Experimental-UI_Reit\models\Flux\FLUX.1-schnell-onnx)
-  FLUX_KONTEXT_DIR   (default: C:\UI\Experimental-UI_Reit\models\Flux\FLUX.1-Kontext-dev-onnx)
+  FLUX_KONTEXT_DIR            Root directory of FLUX.1-Kontext-dev-onnx
+                              (default: C:\\UI\\Experimental-UI_Reit\\models\\Flux\\FLUX.1-Kontext-dev-onnx)
+
+  FLUX_TRANSFORMER_PRECISION  Which transformer variant to load: bf16 | fp4 | fp8
+                              (default: fp8 — smallest VRAM footprint)
+
+  FLUX_USE_FP8_T5             Set to "1" to use t5-fp8.opt instead of t5.opt
+                              (default: 0 — use full-precision T5)
 """
 
 from __future__ import annotations
@@ -48,7 +91,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(me
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Model paths
+# Model paths and precision selection
 # ---------------------------------------------------------------------------
 SCHNELL_DIR = Path(
     os.getenv(
@@ -63,6 +106,55 @@ KONTEXT_DIR = Path(
     )
 )
 
+# Which sub-directory of transformer.opt/ to use: bf16 | fp4 | fp8
+_VALID_PRECISIONS = {"bf16", "fp4", "fp8"}
+TRANSFORMER_PRECISION = os.getenv("FLUX_TRANSFORMER_PRECISION", "fp8").lower()
+if TRANSFORMER_PRECISION not in _VALID_PRECISIONS:
+    raise ValueError(
+        f"FLUX_TRANSFORMER_PRECISION must be one of {_VALID_PRECISIONS}, "
+        f"got {TRANSFORMER_PRECISION!r}"
+    )
+
+# Whether to load the FP8-quantised T5 encoder (smaller, slightly lower quality)
+USE_FP8_T5: bool = os.getenv("FLUX_USE_FP8_T5", "0").strip() == "1"
+
+
+# ---------------------------------------------------------------------------
+# Path helpers — each component lives in <root>/<component>.opt/model.onnx
+# ---------------------------------------------------------------------------
+
+def _component(root: Path, component: str) -> Path:
+    """Return the model.onnx path for *component* inside *root*."""
+    return root / f"{component}.opt" / "model.onnx"
+
+
+def _transformer(root: Path) -> Path:
+    """Return the model.onnx path for the selected transformer precision."""
+    return root / "transformer.opt" / TRANSFORMER_PRECISION / "model.onnx"
+
+
+def _t5(root: Path) -> Path:
+    """Return the model.onnx path for the T5 encoder (fp8 or full-precision)."""
+    folder = "t5-fp8.opt" if USE_FP8_T5 else "t5.opt"
+    return root / folder / "model.onnx"
+
+
+def _validate_model_paths(root: Path, name: str, include_vae_encoder: bool = False) -> None:
+    """Log which model files are present / missing at startup."""
+    paths: list[Path] = [
+        _component(root, "clip"),
+        _t5(root),
+        _transformer(root),
+        _component(root, "vae"),
+    ]
+    if include_vae_encoder:
+        paths.append(_component(root, "vae_encoder"))
+
+    for p in paths:
+        status = "OK" if p.exists() else "MISSING"
+        log.info("[%s] %s  %s", name, status, p)
+
+
 # ---------------------------------------------------------------------------
 # Lazy ONNX session cache
 # ---------------------------------------------------------------------------
@@ -70,10 +162,17 @@ _sessions: dict[str, object] = {}
 
 
 def _session(model_path: Path):
-    """Return a cached OnnxRuntime InferenceSession for *model_path*."""
+    """Return a cached OnnxRuntime InferenceSession for *model_path*.
+
+    *model_path* must point to a model.onnx file.  Any backbone.onnx_data
+    sidecar in the same directory is resolved automatically by onnxruntime.
+    """
     key = str(model_path)
     if key not in _sessions:
         import onnxruntime as ort  # type: ignore
+
+        if not model_path.exists():
+            raise FileNotFoundError(f"ONNX model not found: {model_path}")
 
         providers = (
             ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -175,21 +274,21 @@ def _run_schnell(
     seed: int,
 ) -> Image.Image:
     """
-    Runs the four FLUX.1-schnell ONNX models in sequence:
-      1. clip.opt   — CLIP text encoder
-      2. t5.opt     — T5 text encoder
-      3. transformer.opt — diffusion transformer (denoising)
-      4. vae.opt    — VAE decoder
+    Runs the FLUX.1-schnell ONNX models in sequence:
+      1. clip.opt/model.onnx                         — CLIP text encoder
+      2. t5.opt/model.onnx  (or t5-fp8.opt)          — T5 text encoder
+      3. transformer.opt/{precision}/model.onnx      — diffusion transformer
+      4. vae.opt/model.onnx                          — VAE decoder
     """
     try:
         import onnxruntime as ort  # noqa: F401 (ensure ort is available)
     except ImportError as exc:
         raise RuntimeError("onnxruntime is not installed. Run: pip install onnxruntime") from exc
 
-    clip_sess = _session(SCHNELL_DIR / "clip.opt")
-    t5_sess = _session(SCHNELL_DIR / "t5.opt")
-    transformer_sess = _session(SCHNELL_DIR / "transformer.opt")
-    vae_sess = _session(SCHNELL_DIR / "vae.opt")
+    clip_sess = _session(_component(SCHNELL_DIR, "clip"))
+    t5_sess = _session(_t5(SCHNELL_DIR))
+    transformer_sess = _session(_transformer(SCHNELL_DIR))
+    vae_sess = _session(_component(SCHNELL_DIR, "vae"))
 
     rng = np.random.default_rng(seed)
 
@@ -245,23 +344,23 @@ def _run_kontext(
     seed: int,
 ) -> Image.Image:
     """
-    Runs the six FLUX.1-Kontext-dev ONNX models:
-      1. clip.opt         — CLIP text encoder
-      2. t5.opt           — T5 text encoder
-      3. vae_encoder.opt  — VAE encoder (converts source image → latent)
-      4. transformer.opt  — diffusion transformer (conditional denoising)
-      5. vae.opt          — VAE decoder
+    Runs the FLUX.1-Kontext-dev ONNX models:
+      1. clip.opt/model.onnx                         — CLIP text encoder
+      2. t5.opt/model.onnx  (or t5-fp8.opt)          — T5 text encoder
+      3. vae_encoder.opt/model.onnx                  — VAE encoder (source image → latent)
+      4. transformer.opt/{precision}/model.onnx      — conditional diffusion transformer
+      5. vae.opt/model.onnx                          — VAE decoder
     """
     try:
         import onnxruntime as ort  # noqa: F401
     except ImportError as exc:
         raise RuntimeError("onnxruntime is not installed. Run: pip install onnxruntime") from exc
 
-    clip_sess = _session(KONTEXT_DIR / "clip.opt")
-    t5_sess = _session(KONTEXT_DIR / "t5.opt")
-    vae_enc_sess = _session(KONTEXT_DIR / "vae_encoder.opt")
-    transformer_sess = _session(KONTEXT_DIR / "transformer.opt")
-    vae_dec_sess = _session(KONTEXT_DIR / "vae.opt")
+    clip_sess = _session(_component(KONTEXT_DIR, "clip"))
+    t5_sess = _session(_t5(KONTEXT_DIR))
+    vae_enc_sess = _session(_component(KONTEXT_DIR, "vae_encoder"))
+    transformer_sess = _session(_transformer(KONTEXT_DIR))
+    vae_dec_sess = _session(_component(KONTEXT_DIR, "vae"))
 
     rng = np.random.default_rng(seed)
 
