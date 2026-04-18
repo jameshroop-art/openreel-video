@@ -862,6 +862,64 @@ class DetectFacesResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Audio / .pth model catalog
+# ---------------------------------------------------------------------------
+
+def _discover_pth_models() -> list[dict]:
+    """
+    Recursively scan _BASE for PyTorch .pth files and classify each one.
+
+    Classification rules (in order):
+      rvc        — paired with a FAISS .index file in the same directory, or the
+                   directory name contains common RVC cues
+      extension  — lives under an extensions/ subdirectory
+      other      — everything else (unknown standalone .pth)
+
+    Returns a list of dicts sorted by kind then name, each containing:
+      name      — stem of the filename
+      filename  — full filename
+      path      — absolute path string
+      kind      — "rvc" | "extension" | "other"
+      has_index — True when a companion .index file exists (RVC characteristic)
+      size_mb   — file size in MB
+    """
+    base = Path(_BASE)
+    if not base.exists():
+        return []
+
+    results = []
+    for pth in sorted(base.rglob("*.pth")):
+        try:
+            size_mb = round(pth.stat().st_size / 1_048_576, 1)
+        except OSError:
+            size_mb = None
+
+        has_index = bool(list(pth.parent.glob("*.index")))
+        rel_parts = {p.lower() for p in pth.relative_to(base).parts}
+
+        if has_index or rel_parts & {"rvc", "voice", "singing"}:
+            kind = "rvc"
+        elif "extensions" in rel_parts:
+            kind = "extension"
+        else:
+            kind = "other"
+
+        results.append(
+            {
+                "name": pth.stem,
+                "filename": pth.name,
+                "path": str(pth),
+                "kind": kind,
+                "has_index": has_index,
+                "size_mb": size_mb,
+            }
+        )
+
+    results.sort(key=lambda m: (m["kind"], m["name"].lower()))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
 
@@ -925,6 +983,33 @@ async def health() -> dict:
             if (FLUX_DEV_DIR / "tokenizer").is_dir()
             else "huggingface"
         ),
+        "audio_models": {
+            "note": "GET /audio-models for full list",
+            **{
+                k: sum(1 for m in _discover_pth_models() if m["kind"] == k)
+                for k in ("rvc", "extension", "other")
+            },
+        },
+    }
+
+
+@app.get("/audio-models")
+async def audio_models() -> dict:
+    """
+    Return every .pth file found under the Flux model root, classified by type.
+
+    Kinds:
+      rvc        — RVC (Retrieval-based Voice Conversion) model; has a companion .index file
+      extension  — model stored under an extensions/ subdirectory
+      other      — unclassified standalone .pth
+    """
+    found = _discover_pth_models()
+    return {
+        "total": len(found),
+        "by_kind": {
+            k: [m for m in found if m["kind"] == k]
+            for k in ("rvc", "extension", "other")
+        },
     }
 
 
@@ -1028,5 +1113,17 @@ if __name__ == "__main__":
         "Active text encoder: %s",
         "GGUF Qwen3-4B" if USE_GGUF_T5 else ("T5-fp8 ONNX" if USE_FP8_T5 else "T5-full ONNX"),
     )
+    _pth = _discover_pth_models()
+    _rvc = [m for m in _pth if m["kind"] == "rvc"]
+    _ext = [m for m in _pth if m["kind"] == "extension"]
+    _oth = [m for m in _pth if m["kind"] == "other"]
+    log.info(
+        "Audio .pth models: %d total  (%d rvc, %d extension, %d other)",
+        len(_pth), len(_rvc), len(_ext), len(_oth),
+    )
+    for m in _rvc:
+        log.info("  [rvc      ] %-45s  %.1f MB  index=%s", m["name"], m["size_mb"] or 0, m["has_index"])
+    for m in _ext:
+        log.info("  [extension] %-45s  %.1f MB", m["name"], m["size_mb"] or 0)
     log.info("=========================================================")
     uvicorn.run(app, host="127.0.0.1", port=8080, log_level="info")
