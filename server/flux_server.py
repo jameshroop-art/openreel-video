@@ -89,6 +89,9 @@ Environment variables
   FLUX_LORA_SCALE           LoRA strength 0.0-2.0      default: 1.0
   FLUX_LORA_DIR             directory scanned by GET /loras
                             default: C:\\UI\\Experimental-UI_Reit\\models\\lora
+
+  FLUX_REACTOR_DIR          directory scanned by GET /reactor-models
+                            default: C:\\UI\\Experimental-UI_Reit\\models\\Reactorplus
 """
 
 from __future__ import annotations
@@ -116,6 +119,7 @@ log = logging.getLogger(__name__)
 
 _BASE = r"C:\UI\Experimental-UI_Reit\models\Flux"
 _LORA_BASE = r"C:\UI\Experimental-UI_Reit\models\lora"
+_REACTOR_BASE = r"C:\UI\Experimental-UI_Reit\models\Reactorplus"
 
 # ---------------------------------------------------------------------------
 # Configuration -- model directories
@@ -170,6 +174,7 @@ LORA_PATH = Path(
 )
 LORA_SCALE: float = float(os.getenv("FLUX_LORA_SCALE", "1.0"))
 LORA_DIR = Path(os.getenv("FLUX_LORA_DIR", _LORA_BASE))
+REACTOR_DIR = Path(os.getenv("FLUX_REACTOR_DIR", _REACTOR_BASE))
 
 # ---------------------------------------------------------------------------
 # FLUX VAE / latent constants
@@ -961,8 +966,74 @@ def _discover_loras() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Utilities
+# Reactorplus asset catalog
 # ---------------------------------------------------------------------------
+
+# Model weight extensions to catalog
+_MODEL_SUFFIXES = {".safetensors", ".bin", ".pth", ".pt"}
+
+
+def _discover_reactor_assets() -> list[dict]:
+    """
+    Recursively scan REACTOR_DIR for model weight files and classify each one.
+
+    Classification rules (in order):
+      classifier  — inside attractive_faces_celebs_detection/ (face-scoring ViT)
+      embedding   — filename starts with "learned_embeds" (textual inversion)
+      checkpoint  — inside a checkpoint-*/ subdirectory (training snapshot)
+      diffusers   — inside a diffusers component subdirectory
+                    (unet/, vae/, text_encoder/, feature_extractor/, scheduler/)
+      other       — everything else
+
+    Returns a list of dicts sorted by kind then name, each containing:
+      name     — stem of the filename
+      filename — full filename
+      path     — absolute path string
+      kind     — "classifier" | "embedding" | "checkpoint" | "diffusers" | "other"
+      size_mb  — file size in MB (None on error)
+    """
+    if not REACTOR_DIR.exists():
+        return []
+
+    _DIFFUSERS_COMPONENTS = {"unet", "vae", "text_encoder", "feature_extractor", "scheduler"}
+
+    results = []
+    for f in sorted(REACTOR_DIR.rglob("*")):
+        if f.suffix.lower() not in _MODEL_SUFFIXES:
+            continue
+        if not f.is_file():
+            continue
+
+        try:
+            size_mb = round(f.stat().st_size / 1_048_576, 1)
+        except OSError:
+            size_mb = None
+
+        rel_parts_lower = [p.lower() for p in f.relative_to(REACTOR_DIR).parts]
+
+        if "attractive_faces_celebs_detection" in rel_parts_lower:
+            kind = "classifier"
+        elif f.stem.lower().startswith("learned_embeds"):
+            kind = "embedding"
+        elif any(p.startswith("checkpoint-") for p in rel_parts_lower):
+            kind = "checkpoint"
+        elif _DIFFUSERS_COMPONENTS & set(rel_parts_lower):
+            kind = "diffusers"
+        else:
+            kind = "other"
+
+        results.append(
+            {
+                "name": f.stem,
+                "filename": f.name,
+                "path": str(f),
+                "kind": kind,
+                "size_mb": size_mb,
+            }
+        )
+
+    results.sort(key=lambda m: (m["kind"], m["name"].lower()))
+    return results
 
 def _b64_to_pil(b64: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
@@ -1034,6 +1105,14 @@ async def health() -> dict:
             **{
                 k: sum(1 for m in _discover_pth_models() if m["kind"] == k)
                 for k in ("rvc", "extension", "other")
+            },
+        },
+        "reactor_models": {
+            "dir": str(REACTOR_DIR),
+            "note": "GET /reactor-models for full list",
+            **{
+                k: sum(1 for m in _discover_reactor_assets() if m["kind"] == k)
+                for k in ("classifier", "embedding", "checkpoint", "diffusers", "other")
             },
         },
     }
