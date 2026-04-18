@@ -10,44 +10,45 @@ Runs at http://localhost:8080 and exposes three endpoints:
 On-disk model layout (each component is a sub-directory containing model.onnx)
 -------------------------------------------------------------------------------
   FLUX.1-schnell-onnx/
-    clip.opt/
-      model.onnx
-    t5.opt/
-      backbone.onnx_data
-      model.onnx
-    t5-fp8.opt/
-      backbone.onnx_data
-      model.onnx
-    transformer.opt/
-      bf16/
-        backbone.onnx_data
-        model.onnx
-      fp4/
-        backbone.onnx_data
-        model.onnx
-      fp8/
-        backbone.onnx_data
-        model.onnx
-    vae.opt/
-      model.onnx
-
-  FLUX.1-Kontext-dev-onnx/   (same layout + vae_encoder.opt/)
     clip.opt/model.onnx
-    t5.opt/model.onnx
-    t5-fp8.opt/model.onnx
-    transformer.opt/{precision}/model.onnx
+    t5.opt/backbone.onnx_data + model.onnx
+    t5-fp8.opt/backbone.onnx_data + model.onnx
+    transformer.opt/
+      bf16/backbone.onnx_data + model.onnx
+      fp4/backbone.onnx_data + model.onnx          ← schnell uses "fp4"
+      fp8/backbone.onnx_data + model.onnx
     vae.opt/model.onnx
-    vae_encoder.opt/model.onnx
 
-onnxruntime automatically resolves backbone.onnx_data sidecar files when they
-sit alongside model.onnx in the same directory — no extra configuration needed.
+  FLUX.1-Kontext-dev-onnx/
+    clip.opt/model.onnx
+    t5.opt/backbone.onnx_data + model.onnx
+    t5-fp8.opt/backbone.onnx_data + model.onnx
+    transformer.opt/
+      bf16/backbone.onnx_data + model.onnx
+      fp4_svd32/backbone.onnx_data + model.onnx    ← kontext uses "fp4_svd32"
+      fp8/backbone.onnx_data + model.onnx
+    vae.opt/model.onnx
+    vae_encoder.opt/model.onnx                     ← needed for /edit; empty until downloaded
+
+  FLUX.1-dev/                 ← full diffusers model; tokenizers loaded from here
+    tokenizer/                ← CLIP tokenizer (merges.txt, vocab.json, …)
+    tokenizer_2/              ← T5 tokenizer (spiece.model, tokenizer.json, …)
+
+  flux2-klein-4B-uncensored-text-encoder/
+    qwen3-4b-abl-q4_0.gguf   ← optional GGUF replacement for T5 encoder
+
+onnxruntime resolves backbone.onnx_data sidecar files automatically when they
+sit in the same directory as model.onnx — no extra configuration needed.
 
 Setup (Windows PowerShell)
 --------------------------
-  pip install fastapi uvicorn[standard] onnxruntime pillow numpy
+  pip install fastapi uvicorn[standard] onnxruntime transformers pillow numpy sentencepiece
 
-  # If you have a CUDA GPU (recommended — FLUX is very slow on CPU):
+  # CUDA GPU (strongly recommended — FLUX is very slow on CPU):
   pip install onnxruntime-gpu
+
+  # Only if you want to use the GGUF Qwen3-4B text encoder:
+  pip install llama-cpp-python
 
 Run
 ---
@@ -55,17 +56,28 @@ Run
 
 Environment variables
 ---------------------
-  FLUX_SCHNELL_DIR            Root directory of FLUX.1-schnell-onnx
-                              (default: C:\\UI\\Experimental-UI_Reit\\models\\Flux\\FLUX.1-schnell-onnx)
+  FLUX_SCHNELL_DIR        Root of FLUX.1-schnell-onnx
+                          default: C:\\UI\\Experimental-UI_Reit\\models\\Flux\\FLUX.1-schnell-onnx
 
-  FLUX_KONTEXT_DIR            Root directory of FLUX.1-Kontext-dev-onnx
-                              (default: C:\\UI\\Experimental-UI_Reit\\models\\Flux\\FLUX.1-Kontext-dev-onnx)
+  FLUX_KONTEXT_DIR        Root of FLUX.1-Kontext-dev-onnx
+                          default: C:\\UI\\Experimental-UI_Reit\\models\\Flux\\FLUX.1-Kontext-dev-onnx
 
-  FLUX_TRANSFORMER_PRECISION  Which transformer variant to load: bf16 | fp4 | fp8
-                              (default: fp8 — smallest VRAM footprint)
+  FLUX_DEV_DIR            Root of FLUX.1-dev (full diffusers model with tokenizers)
+                          default: C:\\UI\\Experimental-UI_Reit\\models\\Flux\\FLUX.1-dev
 
-  FLUX_USE_FP8_T5             Set to "1" to use t5-fp8.opt instead of t5.opt
-                              (default: 0 — use full-precision T5)
+  FLUX_SCHNELL_PRECISION  Transformer sub-folder for schnell: bf16 | fp4 | fp8
+                          default: fp8
+
+  FLUX_KONTEXT_PRECISION  Transformer sub-folder for kontext: bf16 | fp4_svd32 | fp8
+                          default: fp8
+
+  FLUX_USE_FP8_T5         "1" → use t5-fp8.opt instead of t5.opt  (default: 0)
+
+  FLUX_GGUF_T5_PATH       Path to the GGUF alternative text encoder
+                          default: …\\flux2-klein-4B-uncensored-text-encoder\\qwen3-4b-abl-q4_0.gguf
+
+  FLUX_USE_GGUF_T5        "1" → use GGUF encoder instead of ONNX T5  (default: 0)
+                          Requires: pip install llama-cpp-python
 """
 
 from __future__ import annotations
