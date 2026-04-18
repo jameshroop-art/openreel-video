@@ -104,6 +104,12 @@ Environment variables
 
   FLUX_ZIMAGE_DIR           directory scanned by GET /zimage-models
                             default: C:\\UI\\Experimental-UI_Reit\\models\\ZImage
+
+  FLUX_VAE_DIR              directory scanned by GET /vae-models
+                            default: C:\\UI\\Experimental-UI_Reit\\models\\VAE
+
+  FLUX_TEXT_ENC_DIR         directory scanned by GET /text-encoders
+                            default: C:\\UI\\Experimental-UI_Reit\\models\\text_encoder
 """
 
 from __future__ import annotations
@@ -135,6 +141,9 @@ _REACTOR_BASE = r"C:\UI\Experimental-UI_Reit\models\Reactorplus"
 _REALESRGAN_BASE = r"C:\UI\Experimental-UI_Reit\models\realesrgan"
 _SD_BASE = r"C:\UI\Experimental-UI_Reit\models\Stable-diffusion"
 _WAN2_BASE = r"C:\UI\Experimental-UI_Reit\models\WAN2-x"
+_ZIMAGE_BASE = r"C:\UI\Experimental-UI_Reit\models\ZImage"
+_VAE_BASE = r"C:\UI\Experimental-UI_Reit\models\VAE"
+_TEXT_ENC_BASE = r"C:\UI\Experimental-UI_Reit\models\text_encoder"
 
 # ---------------------------------------------------------------------------
 # Configuration -- model directories
@@ -193,6 +202,9 @@ REACTOR_DIR = Path(os.getenv("FLUX_REACTOR_DIR", _REACTOR_BASE))
 REALESRGAN_DIR = Path(os.getenv("FLUX_REALESRGAN_DIR", _REALESRGAN_BASE))
 SD_DIR = Path(os.getenv("FLUX_SD_DIR", _SD_BASE))
 WAN2_DIR = Path(os.getenv("FLUX_WAN2_DIR", _WAN2_BASE))
+ZIMAGE_DIR = Path(os.getenv("FLUX_ZIMAGE_DIR", _ZIMAGE_BASE))
+VAE_DIR = Path(os.getenv("FLUX_VAE_DIR", _VAE_BASE))
+TEXT_ENC_DIR = Path(os.getenv("FLUX_TEXT_ENC_DIR", _TEXT_ENC_BASE))
 
 # ---------------------------------------------------------------------------
 # FLUX VAE / latent constants
@@ -1359,8 +1371,269 @@ def _discover_wan2_models() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Utilities
+# Z-Image model catalog
 # ---------------------------------------------------------------------------
+
+_ZIMAGE_COMPONENTS = {
+    "text_encoder", "tokenizer", "transformer", "vae", "scheduler",
+    "image_encoder", "text_encoder_2",
+}
+
+
+def _zimage_variant(name: str) -> str:
+    nl = name.lower()
+    if "turbo" in nl:
+        return "turbo"
+    if "edit" in nl:
+        return "edit"
+    if "omni" in nl:
+        return "omni"
+    return "base"
+
+
+def _discover_zimage_models() -> list[dict]:
+    """
+    Scan ZIMAGE_DIR (one level deep) for Z-Image model directories.
+
+    Format detection:
+      diffusers  — directory contains model_index.json
+      partial    — component subdirectories exist but no model_index.json
+      unknown    — no recognisable pipeline structure
+
+    Variants: base | edit | turbo | omni
+
+    Returns a list sorted by variant then name, each entry containing:
+      name, path, variant, format, components, transformer_shards
+    """
+    if not ZIMAGE_DIR.exists():
+        return []
+
+    results: list[dict] = []
+    for d in sorted(ZIMAGE_DIR.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+
+        variant = _zimage_variant(d.name)
+
+        if (d / "model_index.json").exists():
+            fmt = "diffusers"
+        elif any((d / c).is_dir() for c in _ZIMAGE_COMPONENTS):
+            fmt = "partial"
+        else:
+            fmt = "unknown"
+
+        components = sorted(
+            p.name for p in d.iterdir()
+            if p.is_dir() and p.name in _ZIMAGE_COMPONENTS
+        )
+
+        transformer_dir = d / "transformer"
+        transformer_shards = (
+            len(list(transformer_dir.glob("*.safetensors")))
+            if transformer_dir.exists() else 0
+        )
+
+        results.append({
+            "name": d.name,
+            "path": str(d),
+            "variant": variant,
+            "format": fmt,
+            "components": components,
+            "transformer_shards": transformer_shards,
+        })
+
+    results.sort(key=lambda m: (m["variant"], m["name"].lower()))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Standalone VAE catalog
+# ---------------------------------------------------------------------------
+
+_VAE_WEIGHT_SUFFIXES = {".safetensors", ".pth", ".onnx"}
+_VAE_SHARD_RE = re.compile(r"-\d+-of-\d+", re.IGNORECASE)
+
+
+def _vae_kind(stem: str, rel_parts: list[str]) -> str:
+    sl = stem.lower()
+    path_lower = " ".join(p.lower() for p in rel_parts)
+    if "flux" in path_lower or sl == "ae":
+        return "flux"
+    if sl.startswith("wan") or "wan2" in sl:
+        return "wan2"
+    if "xl" in sl or "sdxl" in sl or "xl" in path_lower:
+        return "sdxl"
+    if "onnx" in sl or "onnx" in path_lower:
+        return "onnx"
+    # Named community VAEs (e.g. VAE_ftasticVAE_v10)
+    if stem.startswith("VAE_"):
+        return "community"
+    return "sd"
+
+
+def _vae_format(filename: str) -> str:
+    fl = filename.lower()
+    if fl.endswith(".onnx"):
+        return "onnx"
+    if fl.endswith(".pth"):
+        return "pth"
+    if ".fp16." in fl:
+        return "safetensors_fp16"
+    return "safetensors"
+
+
+def _discover_vae_models() -> list[dict]:
+    """
+    Recursively scan VAE_DIR for VAE weight files and classify each one.
+
+    Kinds:
+      flux       — FLUX.1 autoencoder (ae.safetensors, FLUX.1-dev* subdirs)
+      wan2       — Wan2.x VAE (.pth files named Wan*.pth)
+      sdxl       — SDXL VAE (sd_xl_*, stable-diffusion-xl-* subdirs)
+      onnx       — ONNX format (.onnx files)
+      community  — named community VAEs (filenames starting with VAE_)
+      sd         — generic Stable Diffusion VAE
+
+    Returns a list sorted by kind then name.
+    """
+    if not VAE_DIR.exists():
+        return []
+
+    results: list[dict] = []
+    for f in sorted(VAE_DIR.rglob("*")):
+        if f.suffix.lower() not in _VAE_WEIGHT_SUFFIXES or not f.is_file():
+            continue
+        try:
+            size_mb = round(f.stat().st_size / 1_048_576, 1)
+        except OSError:
+            size_mb = None
+
+        rel_parts = list(f.relative_to(VAE_DIR).parts[:-1])
+        kind = _vae_kind(f.stem, rel_parts)
+        fmt = _vae_format(f.name)
+        is_shard = bool(_VAE_SHARD_RE.search(f.stem))
+
+        results.append({
+            "name": f.stem,
+            "filename": f.name,
+            "path": str(f),
+            "kind": kind,
+            "format": fmt,
+            "is_shard": is_shard,
+            "size_mb": size_mb,
+        })
+
+    results.sort(key=lambda m: (m["kind"], m["name"].lower()))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Text encoder catalog
+# ---------------------------------------------------------------------------
+
+_TE_WEIGHT_SUFFIXES = {".safetensors", ".bin"}
+_TE_SHARD_RE = re.compile(r"-(\d+)-of-(\d+)(?:_(\d+))?$", re.IGNORECASE)
+
+
+def _te_kind(stem: str) -> str:
+    sl = stem.lower()
+    if "clip_l" in sl:
+        return "clip_l"
+    if "clip_g" in sl:
+        return "clip_g"
+    if "t5xxl" in sl or "t5-xxl" in sl or "t5_xxl" in sl:
+        return "t5"
+    if "openvino" in sl:
+        return "openvino"
+    if "text_encoder_3" in sl:
+        return "te3"
+    if "text_encoder_2" in sl:
+        return "te2"
+    if "text_encoder" in sl:
+        return "te1"
+    return "other"
+
+
+def _discover_text_encoders() -> dict:
+    """
+    Scan TEXT_ENC_DIR (flat, no recursion) for text encoder weight files and
+    FLUX model_index JSON configs.
+
+    Weight files are classified by encoder type:
+      clip_l    — CLIP-L (used by FLUX, SDXL, SD3)
+      clip_g    — CLIP-G (used by SDXL, SD3)
+      t5        — T5-XXL encoder (fp8 / fp16 variants)
+      te1       — text_encoder primary (sharded or single)
+      te2       — text_encoder_2 (sharded or single)
+      te3       — text_encoder_3 (sharded or single)
+      openvino  — OpenVINO binary weights (.bin)
+      other     — unclassified
+
+    Returns a dict with:
+      model_indexes  — FLUX model_index JSON files in the directory
+      encoders       — list of weight file entries sorted by kind then name
+      by_kind        — count summary per kind
+    """
+    if not TEXT_ENC_DIR.exists():
+        return {"model_indexes": [], "encoders": [], "by_kind": {}}
+
+    model_indexes: list[dict] = []
+    encoders: list[dict] = []
+
+    for f in sorted(TEXT_ENC_DIR.iterdir()):
+        if not f.is_file():
+            continue
+
+        # FLUX model_index JSON files
+        if f.suffix.lower() == ".json" and "model_index" in f.name.lower():
+            model_indexes.append({
+                "filename": f.name,
+                "path": str(f),
+                "model": f.name.split("_model_index")[0],  # e.g. "FLUX.1-dev"
+            })
+            continue
+
+        if f.suffix.lower() not in _TE_WEIGHT_SUFFIXES:
+            continue
+
+        try:
+            size_mb = round(f.stat().st_size / 1_048_576, 1)
+        except OSError:
+            size_mb = None
+
+        kind = _te_kind(f.stem)
+
+        # Detect sharding: stem ends with -NNN-of-MMM or -NNN-of-MMM_V
+        shard_match = _TE_SHARD_RE.search(f.stem)
+        if shard_match:
+            shard_num = int(shard_match.group(1))
+            shard_total = int(shard_match.group(2))
+            variant = shard_match.group(3)  # suffix like "_1" → "1"
+        else:
+            shard_num = shard_total = None
+            variant = None
+
+        encoders.append({
+            "name": f.stem,
+            "filename": f.name,
+            "path": str(f),
+            "kind": kind,
+            "format": "openvino" if f.suffix.lower() == ".bin" else "safetensors",
+            "precision": "fp16" if ".fp16." in f.name.lower() or "fp16" in f.stem.lower()
+                         else ("fp8" if "fp8" in f.stem.lower() else "full"),
+            "shard_num": shard_num,
+            "shard_total": shard_total,
+            "variant": variant,
+            "size_mb": size_mb,
+        })
+
+    encoders.sort(key=lambda e: (e["kind"], e["name"].lower()))
+    by_kind = {
+        k: sum(1 for e in encoders if e["kind"] == k)
+        for k in ("clip_l", "clip_g", "t5", "te1", "te2", "te3", "openvino", "other")
+        if any(e["kind"] == k for e in encoders)
+    }
+    return {"model_indexes": model_indexes, "encoders": encoders, "by_kind": by_kind}
 
 def _b64_to_pil(b64: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
@@ -1459,6 +1732,24 @@ async def health() -> dict:
             "dir": str(WAN2_DIR),
             "count": len(_discover_wan2_models()),
             "note": "GET /wan2-models for full list",
+        },
+        "zimage_models": {
+            "dir": str(ZIMAGE_DIR),
+            "count": len(_discover_zimage_models()),
+            "note": "GET /zimage-models for full list",
+        },
+        "vae_models": {
+            "dir": str(VAE_DIR),
+            "note": "GET /vae-models for full list",
+            **{
+                k: sum(1 for m in _discover_vae_models() if m["kind"] == k)
+                for k in ("flux", "wan2", "sdxl", "onnx", "community", "sd")
+            },
+        },
+        "text_encoders": {
+            "dir": str(TEXT_ENC_DIR),
+            "note": "GET /text-encoders for full list",
+            **_discover_text_encoders()["by_kind"],
         },
     }
 
@@ -1618,6 +1909,89 @@ async def wan2_models() -> dict:
             for t in _tasks
         },
     }
+
+
+@app.get("/zimage-models")
+async def zimage_models() -> dict:
+    """
+    Return Z-Image model directories found under ZIMAGE_DIR
+    (default: C:\\UI\\Experimental-UI_Reit\\models\\ZImage).
+
+    Variants:
+      base   — standard text-to-image pipeline (Z-Image)
+      edit   — image editing pipeline (z-image-edit)
+      turbo  — distilled fast pipeline (Z-Image-Turbo)
+      omni   — multimodal base pipeline (Z-Image-Omni-*)
+
+    Override the scan root with the FLUX_ZIMAGE_DIR environment variable.
+    """
+    found = _discover_zimage_models()
+    return {
+        "dir": str(ZIMAGE_DIR),
+        "total": len(found),
+        "by_variant": {
+            v: [m for m in found if m["variant"] == v]
+            for v in ("base", "edit", "turbo", "omni", "other")
+        },
+    }
+
+
+@app.get("/vae-models")
+async def vae_models() -> dict:
+    """
+    Return VAE model files found under VAE_DIR
+    (default: C:\\UI\\Experimental-UI_Reit\\models\\VAE), classified by kind.
+
+    Kinds:
+      flux       — FLUX.1 autoencoder (ae.safetensors, FLUX.1-* subdirs)
+      wan2       — Wan2.x VAE (.pth files: Wan2.1_VAE.pth, Wan2.2_VAE.pth)
+      sdxl       — Stable Diffusion XL VAE (sd_xl_*, stable-diffusion-xl-* subdirs)
+      onnx       — ONNX format VAE models (.onnx)
+      community  — named community VAEs (filenames starting with VAE_)
+      sd         — generic Stable Diffusion VAE weights
+
+    Override the scan root with the FLUX_VAE_DIR environment variable.
+    """
+    found = _discover_vae_models()
+    return {
+        "dir": str(VAE_DIR),
+        "total": len(found),
+        "by_kind": {
+            k: [m for m in found if m["kind"] == k]
+            for k in ("flux", "wan2", "sdxl", "onnx", "community", "sd")
+        },
+    }
+
+
+@app.get("/text-encoders")
+async def text_encoders() -> dict:
+    """
+    Return text encoder weight files found in TEXT_ENC_DIR
+    (default: C:\\UI\\Experimental-UI_Reit\\models\\text_encoder), classified by type.
+
+    Kinds:
+      clip_l    — CLIP-L encoder (used by FLUX, SDXL, SD3)
+      clip_g    — CLIP-G encoder (used by SDXL, SD3)
+      t5        — T5-XXL encoder; fp8 and fp16 variants
+      te1       — text_encoder primary (single-file or sharded sets)
+      te2       — text_encoder_2 (single-file or sharded sets)
+      te3       — text_encoder_3 (config + sharded safetensors)
+      openvino  — OpenVINO binary weights (.bin)
+      other     — unclassified
+
+    Also returns model_indexes — the FLUX model_index JSON files stored here
+    that declare which encoder combination a given FLUX pipeline uses.
+
+    Override the scan root with the FLUX_TEXT_ENC_DIR environment variable.
+    """
+    result = _discover_text_encoders()
+    return {
+        "dir": str(TEXT_ENC_DIR),
+        **result,
+    }
+
+
+@app.post("/generate", response_model=ImageResponse)
 async def generate(req: GenerateRequest) -> ImageResponse:
     """Text-to-image.  model = schnell | dev | dev-uncensored"""
     seed = _random_seed(req.seed)
@@ -1740,5 +2114,23 @@ if __name__ == "__main__":
         log.info("  [wan2 %-8s] %-40s  fmt=%-10s  ver=%s  size=%s",
                  m["task"][:8], m["name"], m["format"],
                  m["version"] or "?", m["size"] or "?")
+    _zi = _discover_zimage_models()
+    log.info("Z-Image models: %d total", len(_zi))
+    for m in _zi:
+        log.info("  [zimage %-6s] %-40s  fmt=%s  %d components",
+                 m["variant"], m["name"], m["format"], len(m["components"]))
+    _vae = _discover_vae_models()
+    log.info("VAE models: %d total  (flux=%d wan2=%d sdxl=%d onnx=%d community=%d sd=%d)",
+             len(_vae),
+             sum(1 for m in _vae if m["kind"] == "flux"),
+             sum(1 for m in _vae if m["kind"] == "wan2"),
+             sum(1 for m in _vae if m["kind"] == "sdxl"),
+             sum(1 for m in _vae if m["kind"] == "onnx"),
+             sum(1 for m in _vae if m["kind"] == "community"),
+             sum(1 for m in _vae if m["kind"] == "sd"))
+    _te = _discover_text_encoders()
+    log.info("Text encoders: %d files  model_indexes=%d  kinds=%s",
+             len(_te["encoders"]), len(_te["model_indexes"]),
+             ", ".join(f"{k}={v}" for k, v in _te["by_kind"].items()))
     log.info("=========================================================")
     uvicorn.run(app, host="127.0.0.1", port=8080, log_level="info")
