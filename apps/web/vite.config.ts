@@ -40,6 +40,8 @@ export default defineConfig({
     },
   },
   server: {
+    port: 55173,
+    strictPort: true,
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "require-corp",
