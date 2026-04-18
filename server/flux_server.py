@@ -964,7 +964,9 @@ def _discover_pth_models() -> list[dict]:
 
 def _discover_loras() -> list[dict]:
     """
-    Recursively scan LORA_DIR for LoRA weight files (.safetensors).
+    Scan LORA_DIR for LoRA weight files (.safetensors).
+
+    Only the immediate contents of LORA_DIR are scanned (non-recursive).
 
     Returns a list of dicts sorted by name, each containing:
       name     — stem of the filename
@@ -976,7 +978,7 @@ def _discover_loras() -> list[dict]:
         return []
 
     results = []
-    for sf in sorted(LORA_DIR.rglob("*.safetensors")):
+    for sf in sorted(LORA_DIR.glob("*.safetensors")):
         try:
             size_mb = round(sf.stat().st_size / 1_048_576, 1)
         except OSError:
@@ -1777,9 +1779,10 @@ async def audio_models() -> dict:
 @app.get("/loras")
 async def loras() -> dict:
     """
-    Return every LoRA .safetensors file found under LORA_DIR
+    Return every LoRA .safetensors file found directly in LORA_DIR
     (default: C:\\UI\\Experimental-UI_Reit\\models\\lora).
 
+    Only the immediate contents of the directory are returned (non-recursive).
     Override the scan root with the FLUX_LORA_DIR environment variable.
     """
     found = _discover_loras()
