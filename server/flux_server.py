@@ -95,6 +95,9 @@ Environment variables
 
   FLUX_REALESRGAN_DIR       directory scanned by GET /upscalers
                             default: C:\\UI\\Experimental-UI_Reit\\models\\realesrgan
+
+  FLUX_SD_DIR               directory scanned by GET /sd-models
+                            default: C:\\UI\\Experimental-UI_Reit\\models\\Stable-diffusion
 """
 
 from __future__ import annotations
@@ -124,6 +127,7 @@ _BASE = r"C:\UI\Experimental-UI_Reit\models\Flux"
 _LORA_BASE = r"C:\UI\Experimental-UI_Reit\models\lora"
 _REACTOR_BASE = r"C:\UI\Experimental-UI_Reit\models\Reactorplus"
 _REALESRGAN_BASE = r"C:\UI\Experimental-UI_Reit\models\realesrgan"
+_SD_BASE = r"C:\UI\Experimental-UI_Reit\models\Stable-diffusion"
 
 # ---------------------------------------------------------------------------
 # Configuration -- model directories
@@ -180,6 +184,7 @@ LORA_SCALE: float = float(os.getenv("FLUX_LORA_SCALE", "1.0"))
 LORA_DIR = Path(os.getenv("FLUX_LORA_DIR", _LORA_BASE))
 REACTOR_DIR = Path(os.getenv("FLUX_REACTOR_DIR", _REACTOR_BASE))
 REALESRGAN_DIR = Path(os.getenv("FLUX_REALESRGAN_DIR", _REALESRGAN_BASE))
+SD_DIR = Path(os.getenv("FLUX_SD_DIR", _SD_BASE))
 
 # ---------------------------------------------------------------------------
 # FLUX VAE / latent constants
@@ -1122,9 +1127,7 @@ def _discover_realesrgan_models() -> list[dict]:
 
 # ---------------------------------------------------------------------------
 # Utilities
-# ---------------------------------------------------------------------------
-
-def _b64_to_pil(b64: str) -> Image.Image:
+# ---------------------------------------------------------------------------(b64: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
 
 
