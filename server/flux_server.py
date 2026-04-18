@@ -85,8 +85,10 @@ Environment variables
   FLUX_GGUF_T5_PATH         path to .gguf file
   FLUX_USE_GGUF_T5          1 -> use GGUF encoder      default: 0
 
-  FLUX_LORA_PATH            path to LoRA .safetensors
+  FLUX_LORA_PATH            path to active LoRA .safetensors (used during generation)
   FLUX_LORA_SCALE           LoRA strength 0.0-2.0      default: 1.0
+  FLUX_LORA_DIR             directory scanned by GET /loras
+                            default: C:\\UI\\Experimental-UI_Reit\\models\\lora
 """
 
 from __future__ import annotations
@@ -113,6 +115,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(me
 log = logging.getLogger(__name__)
 
 _BASE = r"C:\UI\Experimental-UI_Reit\models\Flux"
+_LORA_BASE = r"C:\UI\Experimental-UI_Reit\models\lora"
 
 # ---------------------------------------------------------------------------
 # Configuration -- model directories
@@ -166,6 +169,7 @@ LORA_PATH = Path(
     )
 )
 LORA_SCALE: float = float(os.getenv("FLUX_LORA_SCALE", "1.0"))
+LORA_DIR = Path(os.getenv("FLUX_LORA_DIR", _LORA_BASE))
 
 # ---------------------------------------------------------------------------
 # FLUX VAE / latent constants
@@ -920,6 +924,43 @@ def _discover_pth_models() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# LoRA catalog
+# ---------------------------------------------------------------------------
+
+def _discover_loras() -> list[dict]:
+    """
+    Recursively scan LORA_DIR for LoRA weight files (.safetensors).
+
+    Returns a list of dicts sorted by name, each containing:
+      name     — stem of the filename
+      filename — full filename
+      path     — absolute path string
+      size_mb  — file size in MB (None on error)
+    """
+    if not LORA_DIR.exists():
+        return []
+
+    results = []
+    for sf in sorted(LORA_DIR.rglob("*.safetensors")):
+        try:
+            size_mb = round(sf.stat().st_size / 1_048_576, 1)
+        except OSError:
+            size_mb = None
+
+        results.append(
+            {
+                "name": sf.stem,
+                "filename": sf.name,
+                "path": str(sf),
+                "size_mb": size_mb,
+            }
+        )
+
+    results.sort(key=lambda m: m["name"].lower())
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
 
@@ -978,6 +1019,11 @@ async def health() -> dict:
             "scale": LORA_SCALE,
             "available": LORA_PATH.exists(),
         },
+        "loras": {
+            "dir": str(LORA_DIR),
+            "count": len(_discover_loras()),
+            "note": "GET /loras for full list",
+        },
         "tokenizer_source": (
             str(FLUX_DEV_DIR / "tokenizer")
             if (FLUX_DEV_DIR / "tokenizer").is_dir()
@@ -1010,6 +1056,22 @@ async def audio_models() -> dict:
             k: [m for m in found if m["kind"] == k]
             for k in ("rvc", "extension", "other")
         },
+    }
+
+
+@app.get("/loras")
+async def loras() -> dict:
+    """
+    Return every LoRA .safetensors file found under LORA_DIR
+    (default: C:\\UI\\Experimental-UI_Reit\\models\\lora).
+
+    Override the scan root with the FLUX_LORA_DIR environment variable.
+    """
+    found = _discover_loras()
+    return {
+        "dir": str(LORA_DIR),
+        "total": len(found),
+        "loras": found,
     }
 
 
