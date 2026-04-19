@@ -57,3 +57,31 @@ FEATURES_TWITTER.md
 .claude-tasks.md
 
 CLAUDE.md
+
+# ONNX – binary/compiled assets live at ONNX_MODEL_DIR, not in git
+models/onnx/**/*.onnx
+models/onnx/**/*.pb
+models/onnx/**/*.onnx_data
+models/onnx/**/*.pyc
+models/onnx/**/*.pyi
+models/onnx/**/*.so
+models/onnx/**/*.opt
+models/onnx/**/*.proto
+models/onnx/**/dev_grid.jpg
+models/onnx/__pycache__/
+models/onnx/**/bin/
+models/onnx/**/common/
+models/onnx/**/defs/
+models/onnx/**/frontend/
+models/onnx/**/inliner/
+models/onnx/**/onnx_cpp2py_export/
+models/onnx/**/reference/
+models/onnx/**/shape_inference/
+models/onnx/**/test/
+models/onnx/**/tools/
+models/onnx/**/version_converter/
+models/onnx/**/t5*/
+models/onnx/**/transformer*/
+models/onnx/**/vae*/
+models/onnx/**/clip*/
+models/onnx/backend/test/data/
