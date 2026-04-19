@@ -106,6 +106,17 @@ starts without it (a 503 is returned if that model is requested at runtime).
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Offline HuggingFace shim — must be imported before any HF package so that
+# HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE env vars are set first.
+# This enables auto_approve=NO_DENIAL: models load from local disk only;
+# no API keys or model keys are required.
+# ---------------------------------------------------------------------------
+import sys
+import os as _os
+sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(__file__), "..")))
+import models.hf_offline  # noqa: E402  (must precede all HuggingFace imports)
+
 import base64
 import io
 import logging
@@ -445,6 +456,7 @@ def _get_diffusers_transformer(with_lora: bool = True) -> object:
         str(DEV_UNCENSORED_DIR),
         torch_dtype=dtype,
         low_cpu_mem_usage=True,
+        local_files_only=True,
     ).to(device)
 
     if with_lora and LORA_PATH.exists():
@@ -478,7 +490,7 @@ def _clip_tokenizer() -> object:
                 "or copy the tokenizer/ sub-folder there manually."
             )
         log.info("CLIP tokenizer <- %s", local)
-        _tokenizer_cache["clip"] = CLIPTokenizer.from_pretrained(str(local))
+        _tokenizer_cache["clip"] = CLIPTokenizer.from_pretrained(str(local), local_files_only=True)
     return _tokenizer_cache["clip"]
 
 
@@ -493,7 +505,7 @@ def _t5_tokenizer() -> object:
                 "or copy the tokenizer_2/ sub-folder there manually."
             )
         log.info("T5 tokenizer <- %s", local)
-        _tokenizer_cache["t5"] = T5TokenizerFast.from_pretrained(str(local))
+        _tokenizer_cache["t5"] = T5TokenizerFast.from_pretrained(str(local), local_files_only=True)
     return _tokenizer_cache["t5"]
 
 
