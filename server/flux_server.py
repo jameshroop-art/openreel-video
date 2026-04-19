@@ -107,14 +107,21 @@ starts without it (a 503 is returned if that model is requested at runtime).
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# Offline HuggingFace shim — must be imported before any HF package so that
-# HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE env vars are set first.
-# This enables auto_approve=NO_DENIAL: models load from local disk only;
-# no API keys or model keys are required.
+# Global parameter registry — MUST be the first import in the process.
+# Sets all env vars (DEV_VERSION, AUTO_APPROVE_API_CALLS, NO_TELEMETRY,
+# DISABLE_SAFETY_CHECKER, CIVITAI_*, INSIGHTFACE_*, LoRA paths, etc.),
+# seeds Python/PyTorch/TensorFlow RNGs, and silences upstream warnings.
 # ---------------------------------------------------------------------------
 import sys
 import os as _os
 sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(__file__), "..")))
+import config.global_params  # noqa: E402  (must be the very first import)
+
+# ---------------------------------------------------------------------------
+# Offline HuggingFace shim — must precede all HF imports.
+# HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE are already set by global_params;
+# this module additionally exposes resolve() and from_pretrained() helpers.
+# ---------------------------------------------------------------------------
 import models.hf_offline  # noqa: E402  (must precede all HuggingFace imports)
 
 import base64
