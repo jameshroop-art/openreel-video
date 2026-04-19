@@ -128,26 +128,27 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(me
 log = logging.getLogger(__name__)
 
 
-def _required_dir(env_var: str) -> Optional[Path]:
-    """Return Path from env var, or None if not set."""
-    val = os.getenv(env_var, "").strip()
-    return Path(val) if val else None
-
-
-def _required_path(env_var: str) -> Optional[Path]:
-    """Return Path from env var, or None if not set."""
-    val = os.getenv(env_var, "").strip()
-    return Path(val) if val else None
-
+_BASE = r"C:\UI\Experimental-UI_Reit\models\Flux"
+_LORA_BASE = r"C:\UI\Experimental-UI_Reit\models\lora"
+_REACTOR_BASE = r"C:\UI\Experimental-UI_Reit\models\Reactorplus"
+_REALESRGAN_BASE = r"C:\UI\Experimental-UI_Reit\models\realesrgan"
+_SD_BASE = r"C:\UI\Experimental-UI_Reit\models\Stable-diffusion"
+_WAN2_BASE = r"C:\UI\Experimental-UI_Reit\models\WAN2-x"
+_ZIMAGE_BASE = r"C:\UI\Experimental-UI_Reit\models\ZImage"
+_VAE_BASE = r"C:\UI\Experimental-UI_Reit\models\VAE"
+_TEXT_ENC_BASE = r"C:\UI\Experimental-UI_Reit\models\text_encoder"
+_EMBEDDINGS_BASE = r"C:\UI\Experimental-UI_Reit\models\Embeddings"
 
 # ---------------------------------------------------------------------------
-# Configuration -- model directories  (all require explicit env vars; no defaults)
+# Configuration -- model directories
 # ---------------------------------------------------------------------------
-SCHNELL_DIR: Optional[Path] = _required_dir("FLUX_SCHNELL_DIR")
-DEV_ONNX_DIR: Optional[Path] = _required_dir("FLUX_DEV_ONNX_DIR")
-KONTEXT_DIR: Optional[Path] = _required_dir("FLUX_KONTEXT_DIR")
-FLUX_DEV_DIR: Optional[Path] = _required_dir("FLUX_DEV_DIR")
-DEV_UNCENSORED_DIR: Optional[Path] = _required_dir("FLUX_DEV_UNCENSORED_DIR")
+SCHNELL_DIR = Path(os.getenv("FLUX_SCHNELL_DIR", rf"{_BASE}\FLUX.1-schnell-onnx"))
+DEV_ONNX_DIR = Path(os.getenv("FLUX_DEV_ONNX_DIR", rf"{_BASE}\FLUX.1-dev-onnx"))
+KONTEXT_DIR = Path(os.getenv("FLUX_KONTEXT_DIR", rf"{_BASE}\FLUX.1-Kontext-dev-onnx"))
+FLUX_DEV_DIR = Path(os.getenv("FLUX_DEV_DIR", rf"{_BASE}\FLUX.1-dev"))
+DEV_UNCENSORED_DIR = Path(
+    os.getenv("FLUX_DEV_UNCENSORED_DIR", rf"{_BASE}\flux.1-dev-uncensored-q4")
+)
 
 
 # ---------------------------------------------------------------------------
