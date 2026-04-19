@@ -470,9 +470,14 @@ def _clip_tokenizer() -> object:
     if "clip" not in _tokenizer_cache:
         from transformers import CLIPTokenizer  # type: ignore
         local = FLUX_DEV_DIR / "tokenizer"
-        src = str(local) if local.is_dir() else "openai/clip-vit-large-patch14"
-        log.info("CLIP tokenizer <- %s", src)
-        _tokenizer_cache["clip"] = CLIPTokenizer.from_pretrained(src)
+        if not local.is_dir():
+            raise FileNotFoundError(
+                f"CLIP tokenizer directory not found: {local}\n"
+                "Download FLUX.1-dev locally and set FLUX_DEV_DIR to its path, "
+                "or copy the tokenizer/ sub-folder there manually."
+            )
+        log.info("CLIP tokenizer <- %s", local)
+        _tokenizer_cache["clip"] = CLIPTokenizer.from_pretrained(str(local))
     return _tokenizer_cache["clip"]
 
 
@@ -480,9 +485,14 @@ def _t5_tokenizer() -> object:
     if "t5" not in _tokenizer_cache:
         from transformers import T5TokenizerFast  # type: ignore
         local = FLUX_DEV_DIR / "tokenizer_2"
-        src = str(local) if local.is_dir() else "google/t5-v1_1-xxl"
-        log.info("T5 tokenizer <- %s", src)
-        _tokenizer_cache["t5"] = T5TokenizerFast.from_pretrained(src)
+        if not local.is_dir():
+            raise FileNotFoundError(
+                f"T5 tokenizer directory not found: {local}\n"
+                "Download FLUX.1-dev locally and set FLUX_DEV_DIR to its path, "
+                "or copy the tokenizer_2/ sub-folder there manually."
+            )
+        log.info("T5 tokenizer <- %s", local)
+        _tokenizer_cache["t5"] = T5TokenizerFast.from_pretrained(str(local))
     return _tokenizer_cache["t5"]
 
 
