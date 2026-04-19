@@ -259,9 +259,16 @@ def _validate_model_paths(
 _sessions: dict[str, object] = {}
 
 
-def _session(model_path: Path) -> object:
-    """Return a cached OnnxRuntime InferenceSession."""
-    key = str(model_path)
+def _session(model_path: Path, pipeline: str = "default") -> object:
+    """Return a cached OnnxRuntime InferenceSession scoped to *pipeline*.
+
+    Sessions are keyed by ``(pipeline, model_path)`` so that two pipelines
+    sharing the same on-disk model file each receive their own independent
+    InferenceSession.  This prevents CUDA stream state, workspace buffers, and
+    any other ORT internal state from leaking between concurrent inference
+    calls originating from different pipelines.
+    """
+    key = f"{pipeline}::{model_path}"
     if key not in _sessions:
         import onnxruntime as ort  # type: ignore
 
@@ -273,7 +280,7 @@ def _session(model_path: Path) -> object:
             if "CUDAExecutionProvider" in ort.get_available_providers()
             else ["CPUExecutionProvider"]
         )
-        log.info("Loading ONNX: %s  providers=%s", model_path.name, providers)
+        log.info("Loading ONNX [%s]: %s  providers=%s", pipeline, model_path.name, providers)
         _sessions[key] = ort.InferenceSession(str(model_path), providers=providers)
     return _sessions[key]
 
@@ -288,11 +295,14 @@ def _normalize_weight_name(name: str) -> str:
     return name.lower().replace(".", "/").strip("/")
 
 
-def _session_with_lora(model_path: Path) -> object:
+def _session_with_lora(model_path: Path, pipeline: str = "default") -> object:
     """
     Like _session() but merges matching LoRA deltas from LORA_PATH in-memory before
     creating the ORT session.  Name matching is best-effort (normalised path comparison).
     Falls back to a plain session if safetensors or onnx packages are absent.
+
+    Sessions are scoped to *pipeline* so that different pipelines sharing the
+    same model file do not share ORT session state.
 
     Note: The ORT-optimised (.opt) transformer may have renamed or fused weight nodes,
     resulting in a low match rate.  Use model="dev-uncensored" for reliable LoRA application
@@ -300,9 +310,9 @@ def _session_with_lora(model_path: Path) -> object:
     """
     key = str(model_path)
     if not LORA_PATH.exists():
-        return _session(model_path)
+        return _session(model_path, pipeline)
 
-    lora_key = f"{key}::lora"
+    lora_key = f"{pipeline}::{key}::lora"
     if lora_key in _lora_sessions:
         return _lora_sessions[lora_key]
 
