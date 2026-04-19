@@ -7,50 +7,51 @@ Runs at http://localhost:8080 and exposes three endpoints:
   POST /edit          — image editing via FLUX.1-Kontext-dev-onnx
   POST /detect-faces  — face bounding-box detection (used by auto-reframe)
 
-Model inventory
----------------
-All paths below are relative to C:\\UI\\Experimental-UI_Reit\\models\\Flux\\
+Model layout
+------------
+Each model directory must contain the following sub-directories / files
+(paths are relative to the directory set by the corresponding env var):
 
-  FLUX.1-schnell-onnx/
+  FLUX.1-schnell-onnx/         <- FLUX_SCHNELL_DIR
     clip.opt/model.onnx
     t5.opt/backbone.onnx_data + model.onnx
     t5-fp8.opt/backbone.onnx_data + model.onnx
     transformer.opt/bf16|fp4|fp8/backbone.onnx_data + model.onnx
     vae.opt/model.onnx
 
-  FLUX.1-dev-onnx/
+  FLUX.1-dev-onnx/             <- FLUX_DEV_ONNX_DIR
     clip.opt/model.onnx
     t5.opt/backbone.onnx_data + model.onnx
     t5-fp8.opt/backbone.onnx_data + model.onnx
     transformer.opt/bf16|fp4|fp8/backbone.onnx_data + model.onnx
     vae.opt/model.onnx
+    (also used for CLIP/T5/VAE by dev-uncensored)
 
-  FLUX.1-Kontext-dev-onnx/
+  FLUX.1-Kontext-dev-onnx/     <- FLUX_KONTEXT_DIR
     clip.opt/model.onnx
     t5.opt/backbone.onnx_data + model.onnx
     t5-fp8.opt/backbone.onnx_data + model.onnx
-    transformer.opt/bf16|fp4_svd32|fp8/backbone.onnx_data + model.onnx   <- fp4_svd32
+    transformer.opt/bf16|fp4_svd32|fp8/backbone.onnx_data + model.onnx
     vae.opt/model.onnx
-    vae_encoder.opt/model.onnx          <- required for /edit; currently empty
+    vae_encoder.opt/model.onnx          <- required for /edit
 
-  FLUX.1-dev/
+  FLUX.1-dev/                  <- FLUX_DEV_DIR  (tokenizer source)
     tokenizer/                          <- CLIP tokenizer files
     tokenizer_2/                        <- T5 tokenizer files
 
-  flux.1-dev-uncensored-q4/             <- Q4 safetensors transformer (diffusers format)
+  flux.1-dev-uncensored-q4/    <- FLUX_DEV_UNCENSORED_DIR
     config.json
     diffusion_pytorch_model.safetensors
 
-  flux2-klein-4B-uncensored-text-encoder/
-    qwen3-4b-abl-q4_0.gguf             <- optional GGUF replacement for T5
+  <gguf-text-encoder>/         <- FLUX_GGUF_T5_PATH (full path to .gguf file)
+    qwen3-4b-abl-q4_0.gguf
 
-  Flux_Lustly.ai_Uncensored_nsfw_v1/
-    flux_lustly-ai_v1.safetensors       <- LoRA; applies to all transformer variants
+  <lora-file>/                 <- FLUX_LORA_PATH (full path to .safetensors file)
 
 onnxruntime resolves backbone.onnx_data sidecars automatically.
 
-Setup (Windows PowerShell)
---------------------------
+Setup
+-----
   pip install fastapi uvicorn[standard] onnxruntime transformers safetensors pillow numpy sentencepiece
 
   # CUDA GPU (strongly recommended):
@@ -71,48 +72,36 @@ Run
 
 Environment variables
 ---------------------
-  FLUX_SCHNELL_DIR          default: ...\\FLUX.1-schnell-onnx
-  FLUX_DEV_ONNX_DIR         default: ...\\FLUX.1-dev-onnx
-  FLUX_KONTEXT_DIR          default: ...\\FLUX.1-Kontext-dev-onnx
-  FLUX_DEV_DIR              default: ...\\FLUX.1-dev          (tokenizer source)
-  FLUX_DEV_UNCENSORED_DIR   default: ...\\flux.1-dev-uncensored-q4
+All directory/path variables have NO built-in default. If an env var is not
+set the corresponding feature/model is treated as unavailable and the server
+starts without it (a 503 is returned if that model is requested at runtime).
+
+  FLUX_SCHNELL_DIR          path to FLUX.1-schnell-onnx directory
+  FLUX_DEV_ONNX_DIR         path to FLUX.1-dev-onnx directory
+  FLUX_KONTEXT_DIR          path to FLUX.1-Kontext-dev-onnx directory
+  FLUX_DEV_DIR              path to FLUX.1-dev directory (tokenizer source; required)
+  FLUX_DEV_UNCENSORED_DIR   path to flux.1-dev-uncensored-q4 directory
 
   FLUX_SCHNELL_PRECISION    bf16 | fp4 | fp8          default: fp8
   FLUX_DEV_ONNX_PRECISION   bf16 | fp4 | fp8          default: fp8
   FLUX_KONTEXT_PRECISION    bf16 | fp4_svd32 | fp8    default: fp8
 
   FLUX_USE_FP8_T5           1 -> use t5-fp8.opt        default: 0
-  FLUX_GGUF_T5_PATH         path to .gguf file
+  FLUX_GGUF_T5_PATH         full path to .gguf text encoder file (no default)
   FLUX_USE_GGUF_T5          1 -> use GGUF encoder      default: 0
 
-  FLUX_LORA_PATH            path to active LoRA .safetensors (used during generation)
+  FLUX_LORA_PATH            full path to active LoRA .safetensors (no default)
   FLUX_LORA_SCALE           LoRA strength 0.0-2.0      default: 1.0
-  FLUX_LORA_DIR             directory scanned by GET /loras
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\lora
+  FLUX_LORA_DIR             directory scanned by GET /loras (no default)
 
-  FLUX_REACTOR_DIR          directory scanned by GET /reactor-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\Reactorplus
-
-  FLUX_REALESRGAN_DIR       directory scanned by GET /upscalers
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\realesrgan
-
-  FLUX_SD_DIR               directory scanned by GET /sd-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\Stable-diffusion
-
-  FLUX_WAN2_DIR             directory scanned by GET /wan2-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\WAN2-x
-
-  FLUX_ZIMAGE_DIR           directory scanned by GET /zimage-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\ZImage
-
-  FLUX_VAE_DIR              directory scanned by GET /vae-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\VAE
-
-  FLUX_TEXT_ENC_DIR         directory scanned by GET /text-encoders
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\text_encoder
-
-  FLUX_EMBEDDINGS_DIR       directory scanned by GET /embeddings
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\Embeddings
+  FLUX_REACTOR_DIR          directory scanned by GET /reactor-models (no default)
+  FLUX_REALESRGAN_DIR       directory scanned by GET /upscalers (no default)
+  FLUX_SD_DIR               directory scanned by GET /sd-models (no default)
+  FLUX_WAN2_DIR             directory scanned by GET /wan2-models (no default)
+  FLUX_ZIMAGE_DIR           directory scanned by GET /zimage-models (no default)
+  FLUX_VAE_DIR              directory scanned by GET /vae-models (no default)
+  FLUX_TEXT_ENC_DIR         directory scanned by GET /text-encoders (no default)
+  FLUX_EMBEDDINGS_DIR       directory scanned by GET /embeddings (no default)
 """
 
 from __future__ import annotations
@@ -138,27 +127,28 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger(__name__)
 
-_BASE = r"C:\UI\Experimental-UI_Reit\models\Flux"
-_LORA_BASE = r"C:\UI\Experimental-UI_Reit\models\lora"
-_REACTOR_BASE = r"C:\UI\Experimental-UI_Reit\models\Reactorplus"
-_REALESRGAN_BASE = r"C:\UI\Experimental-UI_Reit\models\realesrgan"
-_SD_BASE = r"C:\UI\Experimental-UI_Reit\models\Stable-diffusion"
-_WAN2_BASE = r"C:\UI\Experimental-UI_Reit\models\WAN2-x"
-_ZIMAGE_BASE = r"C:\UI\Experimental-UI_Reit\models\ZImage"
-_VAE_BASE = r"C:\UI\Experimental-UI_Reit\models\VAE"
-_TEXT_ENC_BASE = r"C:\UI\Experimental-UI_Reit\models\text_encoder"
-_EMBEDDINGS_BASE = r"C:\UI\Experimental-UI_Reit\models\Embeddings"
+
+def _required_dir(env_var: str) -> Optional[Path]:
+    """Return Path from env var, or None if not set."""
+    val = os.getenv(env_var, "").strip()
+    return Path(val) if val else None
+
+
+def _required_path(env_var: str) -> Optional[Path]:
+    """Return Path from env var, or None if not set."""
+    val = os.getenv(env_var, "").strip()
+    return Path(val) if val else None
+
 
 # ---------------------------------------------------------------------------
-# Configuration -- model directories
+# Configuration -- model directories  (all require explicit env vars; no defaults)
 # ---------------------------------------------------------------------------
-SCHNELL_DIR = Path(os.getenv("FLUX_SCHNELL_DIR", rf"{_BASE}\FLUX.1-schnell-onnx"))
-DEV_ONNX_DIR = Path(os.getenv("FLUX_DEV_ONNX_DIR", rf"{_BASE}\FLUX.1-dev-onnx"))
-KONTEXT_DIR = Path(os.getenv("FLUX_KONTEXT_DIR", rf"{_BASE}\FLUX.1-Kontext-dev-onnx"))
-FLUX_DEV_DIR = Path(os.getenv("FLUX_DEV_DIR", rf"{_BASE}\FLUX.1-dev"))
-DEV_UNCENSORED_DIR = Path(
-    os.getenv("FLUX_DEV_UNCENSORED_DIR", rf"{_BASE}\flux.1-dev-uncensored-q4")
-)
+SCHNELL_DIR: Optional[Path] = _required_dir("FLUX_SCHNELL_DIR")
+DEV_ONNX_DIR: Optional[Path] = _required_dir("FLUX_DEV_ONNX_DIR")
+KONTEXT_DIR: Optional[Path] = _required_dir("FLUX_KONTEXT_DIR")
+FLUX_DEV_DIR: Optional[Path] = _required_dir("FLUX_DEV_DIR")
+DEV_UNCENSORED_DIR: Optional[Path] = _required_dir("FLUX_DEV_UNCENSORED_DIR")
+
 
 # ---------------------------------------------------------------------------
 # Configuration -- transformer precision
