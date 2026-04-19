@@ -7,50 +7,51 @@ Runs at http://localhost:8080 and exposes three endpoints:
   POST /edit          — image editing via FLUX.1-Kontext-dev-onnx
   POST /detect-faces  — face bounding-box detection (used by auto-reframe)
 
-Model inventory
----------------
-All paths below are relative to C:\\UI\\Experimental-UI_Reit\\models\\Flux\\
+Model layout
+------------
+Each model directory must contain the following sub-directories / files
+(paths are relative to the directory set by the corresponding env var):
 
-  FLUX.1-schnell-onnx/
+  FLUX.1-schnell-onnx/         <- FLUX_SCHNELL_DIR
     clip.opt/model.onnx
     t5.opt/backbone.onnx_data + model.onnx
     t5-fp8.opt/backbone.onnx_data + model.onnx
     transformer.opt/bf16|fp4|fp8/backbone.onnx_data + model.onnx
     vae.opt/model.onnx
 
-  FLUX.1-dev-onnx/
+  FLUX.1-dev-onnx/             <- FLUX_DEV_ONNX_DIR
     clip.opt/model.onnx
     t5.opt/backbone.onnx_data + model.onnx
     t5-fp8.opt/backbone.onnx_data + model.onnx
     transformer.opt/bf16|fp4|fp8/backbone.onnx_data + model.onnx
     vae.opt/model.onnx
+    (also used for CLIP/T5/VAE by dev-uncensored)
 
-  FLUX.1-Kontext-dev-onnx/
+  FLUX.1-Kontext-dev-onnx/     <- FLUX_KONTEXT_DIR
     clip.opt/model.onnx
     t5.opt/backbone.onnx_data + model.onnx
     t5-fp8.opt/backbone.onnx_data + model.onnx
-    transformer.opt/bf16|fp4_svd32|fp8/backbone.onnx_data + model.onnx   <- fp4_svd32
+    transformer.opt/bf16|fp4_svd32|fp8/backbone.onnx_data + model.onnx
     vae.opt/model.onnx
-    vae_encoder.opt/model.onnx          <- required for /edit; currently empty
+    vae_encoder.opt/model.onnx          <- required for /edit
 
-  FLUX.1-dev/
+  FLUX.1-dev/                  <- FLUX_DEV_DIR  (tokenizer source)
     tokenizer/                          <- CLIP tokenizer files
     tokenizer_2/                        <- T5 tokenizer files
 
-  flux.1-dev-uncensored-q4/             <- Q4 safetensors transformer (diffusers format)
+  flux.1-dev-uncensored-q4/    <- FLUX_DEV_UNCENSORED_DIR
     config.json
     diffusion_pytorch_model.safetensors
 
-  flux2-klein-4B-uncensored-text-encoder/
-    qwen3-4b-abl-q4_0.gguf             <- optional GGUF replacement for T5
+  <gguf-text-encoder>/         <- FLUX_GGUF_T5_PATH (full path to .gguf file)
+    qwen3-4b-abl-q4_0.gguf
 
-  Flux_Lustly.ai_Uncensored_nsfw_v1/
-    flux_lustly-ai_v1.safetensors       <- LoRA; applies to all transformer variants
+  <lora-file>/                 <- FLUX_LORA_PATH (full path to .safetensors file)
 
 onnxruntime resolves backbone.onnx_data sidecars automatically.
 
-Setup (Windows PowerShell)
---------------------------
+Setup
+-----
   pip install fastapi uvicorn[standard] onnxruntime transformers safetensors pillow numpy sentencepiece
 
   # CUDA GPU (strongly recommended):
@@ -71,51 +72,57 @@ Run
 
 Environment variables
 ---------------------
-  FLUX_SCHNELL_DIR          default: ...\\FLUX.1-schnell-onnx
-  FLUX_DEV_ONNX_DIR         default: ...\\FLUX.1-dev-onnx
-  FLUX_KONTEXT_DIR          default: ...\\FLUX.1-Kontext-dev-onnx
-  FLUX_DEV_DIR              default: ...\\FLUX.1-dev          (tokenizer source)
-  FLUX_DEV_UNCENSORED_DIR   default: ...\\flux.1-dev-uncensored-q4
+All directory/path variables have NO built-in default. If an env var is not
+set the corresponding feature/model is treated as unavailable and the server
+starts without it (a 503 is returned if that model is requested at runtime).
+
+  FLUX_SCHNELL_DIR          path to FLUX.1-schnell-onnx directory
+  FLUX_DEV_ONNX_DIR         path to FLUX.1-dev-onnx directory
+  FLUX_KONTEXT_DIR          path to FLUX.1-Kontext-dev-onnx directory
+  FLUX_DEV_DIR              path to FLUX.1-dev directory (tokenizer source; required)
+  FLUX_DEV_UNCENSORED_DIR   path to flux.1-dev-uncensored-q4 directory
 
   FLUX_SCHNELL_PRECISION    bf16 | fp4 | fp8          default: fp8
   FLUX_DEV_ONNX_PRECISION   bf16 | fp4 | fp8          default: fp8
   FLUX_KONTEXT_PRECISION    bf16 | fp4_svd32 | fp8    default: fp8
 
   FLUX_USE_FP8_T5           1 -> use t5-fp8.opt        default: 0
-  FLUX_GGUF_T5_PATH         path to .gguf file
+  FLUX_GGUF_T5_PATH         full path to .gguf text encoder file (no default)
   FLUX_USE_GGUF_T5          1 -> use GGUF encoder      default: 0
 
-  FLUX_LORA_PATH            path to active LoRA .safetensors (used during generation)
+  FLUX_LORA_PATH            full path to active LoRA .safetensors (no default)
   FLUX_LORA_SCALE           LoRA strength 0.0-2.0      default: 1.0
-  FLUX_LORA_DIR             directory scanned by GET /loras
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\lora
+  FLUX_LORA_DIR             directory scanned by GET /loras (no default)
 
-  FLUX_REACTOR_DIR          directory scanned by GET /reactor-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\Reactorplus
-
-  FLUX_REALESRGAN_DIR       directory scanned by GET /upscalers
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\realesrgan
-
-  FLUX_SD_DIR               directory scanned by GET /sd-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\Stable-diffusion
-
-  FLUX_WAN2_DIR             directory scanned by GET /wan2-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\WAN2-x
-
-  FLUX_ZIMAGE_DIR           directory scanned by GET /zimage-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\ZImage
-
-  FLUX_VAE_DIR              directory scanned by GET /vae-models
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\VAE
-
-  FLUX_TEXT_ENC_DIR         directory scanned by GET /text-encoders
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\text_encoder
-
-  FLUX_EMBEDDINGS_DIR       directory scanned by GET /embeddings
-                            default: C:\\UI\\Experimental-UI_Reit\\models\\Embeddings
+  FLUX_REACTOR_DIR          directory scanned by GET /reactor-models (no default)
+  FLUX_REALESRGAN_DIR       directory scanned by GET /upscalers (no default)
+  FLUX_SD_DIR               directory scanned by GET /sd-models (no default)
+  FLUX_WAN2_DIR             directory scanned by GET /wan2-models (no default)
+  FLUX_ZIMAGE_DIR           directory scanned by GET /zimage-models (no default)
+  FLUX_VAE_DIR              directory scanned by GET /vae-models (no default)
+  FLUX_TEXT_ENC_DIR         directory scanned by GET /text-encoders (no default)
+  FLUX_EMBEDDINGS_DIR       directory scanned by GET /embeddings (no default)
 """
 
 from __future__ import annotations
+
+# ---------------------------------------------------------------------------
+# Global parameter registry — MUST be the first import in the process.
+# Sets all env vars (DEV_VERSION, AUTO_APPROVE_API_CALLS, NO_TELEMETRY,
+# DISABLE_SAFETY_CHECKER, CIVITAI_*, INSIGHTFACE_*, LoRA paths, etc.),
+# seeds Python/PyTorch/TensorFlow RNGs, and silences upstream warnings.
+# ---------------------------------------------------------------------------
+import sys
+import os as _os
+sys.path.insert(0, _os.path.normpath(_os.path.join(_os.path.dirname(__file__), "..")))
+import config.global_params  # noqa: E402  (must be the very first import)
+
+# ---------------------------------------------------------------------------
+# Offline HuggingFace shim — must precede all HF imports.
+# HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE are already set by global_params;
+# this module additionally exposes resolve() and from_pretrained() helpers.
+# ---------------------------------------------------------------------------
+import models.hf_offline  # noqa: E402  (must precede all HuggingFace imports)
 
 import base64
 import io
@@ -138,6 +145,7 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger(__name__)
 
+
 _BASE = r"C:\UI\Experimental-UI_Reit\models\Flux"
 _LORA_BASE = r"C:\UI\Experimental-UI_Reit\models\lora"
 _REACTOR_BASE = r"C:\UI\Experimental-UI_Reit\models\Reactorplus"
@@ -159,6 +167,7 @@ FLUX_DEV_DIR = Path(os.getenv("FLUX_DEV_DIR", rf"{_BASE}\FLUX.1-dev"))
 DEV_UNCENSORED_DIR = Path(
     os.getenv("FLUX_DEV_UNCENSORED_DIR", rf"{_BASE}\flux.1-dev-uncensored-q4")
 )
+
 
 # ---------------------------------------------------------------------------
 # Configuration -- transformer precision
@@ -259,9 +268,16 @@ def _validate_model_paths(
 _sessions: dict[str, object] = {}
 
 
-def _session(model_path: Path) -> object:
-    """Return a cached OnnxRuntime InferenceSession."""
-    key = str(model_path)
+def _session(model_path: Path, pipeline: str = "default") -> object:
+    """Return a cached OnnxRuntime InferenceSession scoped to *pipeline*.
+
+    Sessions are keyed by ``(pipeline, model_path)`` so that two pipelines
+    sharing the same on-disk model file each receive their own independent
+    InferenceSession.  This prevents CUDA stream state, workspace buffers, and
+    any other ORT internal state from leaking between concurrent inference
+    calls originating from different pipelines.
+    """
+    key = f"{pipeline}::{model_path}"
     if key not in _sessions:
         import onnxruntime as ort  # type: ignore
 
@@ -273,7 +289,7 @@ def _session(model_path: Path) -> object:
             if "CUDAExecutionProvider" in ort.get_available_providers()
             else ["CPUExecutionProvider"]
         )
-        log.info("Loading ONNX: %s  providers=%s", model_path.name, providers)
+        log.info("Loading ONNX [%s]: %s  providers=%s", pipeline, model_path.name, providers)
         _sessions[key] = ort.InferenceSession(str(model_path), providers=providers)
     return _sessions[key]
 
@@ -288,11 +304,14 @@ def _normalize_weight_name(name: str) -> str:
     return name.lower().replace(".", "/").strip("/")
 
 
-def _session_with_lora(model_path: Path) -> object:
+def _session_with_lora(model_path: Path, pipeline: str = "default") -> object:
     """
     Like _session() but merges matching LoRA deltas from LORA_PATH in-memory before
     creating the ORT session.  Name matching is best-effort (normalised path comparison).
     Falls back to a plain session if safetensors or onnx packages are absent.
+
+    Sessions are scoped to *pipeline* so that different pipelines sharing the
+    same model file do not share ORT session state.
 
     Note: The ORT-optimised (.opt) transformer may have renamed or fused weight nodes,
     resulting in a low match rate.  Use model="dev-uncensored" for reliable LoRA application
@@ -300,9 +319,9 @@ def _session_with_lora(model_path: Path) -> object:
     """
     key = str(model_path)
     if not LORA_PATH.exists():
-        return _session(model_path)
+        return _session(model_path, pipeline)
 
-    lora_key = f"{key}::lora"
+    lora_key = f"{pipeline}::{key}::lora"
     if lora_key in _lora_sessions:
         return _lora_sessions[lora_key]
 
@@ -444,6 +463,7 @@ def _get_diffusers_transformer(with_lora: bool = True) -> object:
         str(DEV_UNCENSORED_DIR),
         torch_dtype=dtype,
         low_cpu_mem_usage=True,
+        local_files_only=True,
     ).to(device)
 
     if with_lora and LORA_PATH.exists():
@@ -470,9 +490,14 @@ def _clip_tokenizer() -> object:
     if "clip" not in _tokenizer_cache:
         from transformers import CLIPTokenizer  # type: ignore
         local = FLUX_DEV_DIR / "tokenizer"
-        src = str(local) if local.is_dir() else "openai/clip-vit-large-patch14"
-        log.info("CLIP tokenizer <- %s", src)
-        _tokenizer_cache["clip"] = CLIPTokenizer.from_pretrained(src)
+        if not local.is_dir():
+            raise FileNotFoundError(
+                f"CLIP tokenizer directory not found: {local}\n"
+                "Download FLUX.1-dev locally and set FLUX_DEV_DIR to its path, "
+                "or copy the tokenizer/ sub-folder there manually."
+            )
+        log.info("CLIP tokenizer <- %s", local)
+        _tokenizer_cache["clip"] = CLIPTokenizer.from_pretrained(str(local), local_files_only=True)
     return _tokenizer_cache["clip"]
 
 
@@ -480,9 +505,14 @@ def _t5_tokenizer() -> object:
     if "t5" not in _tokenizer_cache:
         from transformers import T5TokenizerFast  # type: ignore
         local = FLUX_DEV_DIR / "tokenizer_2"
-        src = str(local) if local.is_dir() else "google/t5-v1_1-xxl"
-        log.info("T5 tokenizer <- %s", src)
-        _tokenizer_cache["t5"] = T5TokenizerFast.from_pretrained(src)
+        if not local.is_dir():
+            raise FileNotFoundError(
+                f"T5 tokenizer directory not found: {local}\n"
+                "Download FLUX.1-dev locally and set FLUX_DEV_DIR to its path, "
+                "or copy the tokenizer_2/ sub-folder there manually."
+            )
+        log.info("T5 tokenizer <- %s", local)
+        _tokenizer_cache["t5"] = T5TokenizerFast.from_pretrained(str(local), local_files_only=True)
     return _tokenizer_cache["t5"]
 
 
