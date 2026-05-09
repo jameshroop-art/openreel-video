@@ -1301,10 +1301,11 @@ _WAN2_COMPONENTS = {
 }
 _WAN2_WEIGHT_SUFFIXES = {".safetensors", ".pth"}
 _WAN2_IGNORED_SUFFIXES = {".metadata", ".lock", ".incomplete"}
+_WAN2_SPLIT_FILES_TAG = "split_files"
 
 
 def _is_loadable_wan2_weight(path: Path) -> bool:
-    """True when path is a loadable WAN2 weight file and not a lock/metadata artifact."""
+    """True when path is a file ending in .safetensors/.pth and not ending with .metadata, .lock, or .incomplete."""
     if not path.is_file():
         return False
     lower_name = path.name.lower()
@@ -1376,7 +1377,7 @@ def _discover_wan2_models() -> list[dict]:
 
     results: list[dict] = []
     for d in sorted(WAN2_DIR.iterdir()):
-        if not d.is_dir() or d.name.startswith(".") or d.name == "split_files":
+        if not d.is_dir() or d.name.startswith(".") or d.name == _WAN2_SPLIT_FILES_TAG:
             continue
 
         meta = _wan2_meta(d.name)
@@ -1421,7 +1422,7 @@ def _discover_wan2_models() -> list[dict]:
             "source_layout": "classic_dir",
         })
 
-    split_files = WAN2_DIR / "split_files"
+    split_files = WAN2_DIR / _WAN2_SPLIT_FILES_TAG
     split_diffusion = split_files / "diffusion_models"
     if split_diffusion.exists() and split_diffusion.is_dir():
         for f in sorted(split_diffusion.iterdir()):
@@ -1435,14 +1436,14 @@ def _discover_wan2_models() -> list[dict]:
             results.append({
                 "name": f.stem,
                 "path": str(f),
-                "format": "split_files",
+                "format": _WAN2_SPLIT_FILES_TAG,
                 "task": meta["task"],
                 "version": meta["version"],
                 "size": meta["size"],
                 "components": ["diffusion_models"],
                 "root_weights": [{"filename": f.name, "size_mb": size_mb}],
                 "transformer_shards": 0,
-                "source_layout": "split_files",
+                "source_layout": _WAN2_SPLIT_FILES_TAG,
             })
 
     results.sort(key=lambda m: (m["task"], m["name"].lower()))
@@ -1450,17 +1451,30 @@ def _discover_wan2_models() -> list[dict]:
 
 
 def _verify_wan2_layout() -> dict:
-    """Return WAN2 layout/loadability verification for both classic and split-files layouts."""
+    """
+    Return WAN2 layout/loadability verification for both classic and split-files layouts.
+
+    Response fields:
+      root: str
+      classic_model_dirs: int
+      split_files: dict[detected: bool, path: str, diffusion_models_path: str,
+                        audio_encoders_path: str, diffusion_model_weights: int,
+                        audio_encoder_weights: int]
+      ignored_artifacts: dict[suffixes: list[str], count: int]
+      load_ready: bool
+    """
     root = WAN2_DIR
-    split_root = root / "split_files"
+    split_root = root / _WAN2_SPLIT_FILES_TAG
     split_diffusion = split_root / "diffusion_models"
     split_audio = split_root / "audio_encoders"
+    # HuggingFace download cache often keeps artifact-only sidecars for split_files assets;
+    # include it in ignored-artifact counts so diagnostics match on-disk WAN2 setups.
     cache_split = root / ".cache" / "huggingface" / "download" / "split_files" / "diffusion_models"
 
     classic_dirs = 0
     if root.exists():
         for d in root.iterdir():
-            if not d.is_dir() or d.name.startswith(".") or d.name == "split_files":
+            if not d.is_dir() or d.name.startswith(".") or d.name == _WAN2_SPLIT_FILES_TAG:
                 continue
             if (d / "model_index.json").exists() or (d / "config.json").exists() or (d / "configuration.json").exists():
                 classic_dirs += 1
@@ -1514,12 +1528,26 @@ _SDCPP_BINARY_NAMES = {
     "stable-diffusion", "stable-diffusion.exe",
     "main", "main.exe",
 }
-_SDCPP_BINARY_DIR_CANDIDATES = ("", "bin", "build/bin")
+_SDCPP_BINARY_DIR_CANDIDATES: tuple[tuple[str, ...], ...] = (
+    (),
+    ("bin",),
+    ("build", "bin",),
+)
 _SDCPP_MODEL_SUFFIXES = {".gguf", ".safetensors", ".ckpt", ".bin"}
 
 
 def _discover_stable_diffusion_cpp() -> dict:
-    """Detect stable-diffusion.cpp runtime readiness from the configured install root."""
+    """
+    Detect stable-diffusion.cpp runtime readiness from the configured install root.
+
+    Response fields:
+      dir: str
+      exists: bool
+      ready: bool
+      binaries: list[str]
+      models: list[dict[filename: str, path: str, size_mb: float|None]]
+      missing: list[str]
+    """
     if not SDCPP_DIR.exists():
         return {
             "dir": str(SDCPP_DIR),
@@ -1531,8 +1559,8 @@ def _discover_stable_diffusion_cpp() -> dict:
         }
 
     binary_hits: list[str] = []
-    for rel_dir in _SDCPP_BINARY_DIR_CANDIDATES:
-        candidate_dir = SDCPP_DIR / rel_dir if rel_dir else SDCPP_DIR
+    for rel_parts in _SDCPP_BINARY_DIR_CANDIDATES:
+        candidate_dir = SDCPP_DIR.joinpath(*rel_parts) if rel_parts else SDCPP_DIR
         if not candidate_dir.exists():
             continue
         for name in sorted(_SDCPP_BINARY_NAMES):
@@ -1540,10 +1568,14 @@ def _discover_stable_diffusion_cpp() -> dict:
             if p.exists() and p.is_file():
                 binary_hits.append(str(p))
 
+    model_candidates: set[Path] = set()
+    for suffix in _SDCPP_MODEL_SUFFIXES:
+        model_candidates.update(
+            f for f in SDCPP_DIR.rglob(f"*{suffix}") if f.is_file()
+        )
+
     model_hits: list[dict] = []
-    for f in sorted(SDCPP_DIR.rglob("*")):
-        if not f.is_file() or f.suffix.lower() not in _SDCPP_MODEL_SUFFIXES:
-            continue
+    for f in sorted(model_candidates):
         try:
             size_mb = round(f.stat().st_size / 1_048_576, 1)
         except OSError:
@@ -1566,8 +1598,17 @@ def _discover_stable_diffusion_cpp() -> dict:
     }
 
 
-def _env_truthy(name: str, default: str = "0") -> bool:
+def _is_env_enabled(name: str, default: str = "0") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Environment flags that must all be enabled to satisfy strict offline/local-only health gates.
+_OFFLINE_ENFORCEMENT_ENV_VARS: tuple[tuple[str, str], ...] = (
+    ("LOCAL_FILES_ONLY", "1"),
+    ("HF_HUB_OFFLINE", "1"),
+    ("TRANSFORMERS_OFFLINE", "1"),
+    ("HF_DATASETS_OFFLINE", "1"),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1906,18 +1947,14 @@ def _random_seed(seed: Optional[int]) -> int:
 async def health() -> dict:
     wan2_verification = _verify_wan2_layout()
     sdcpp = _discover_stable_diffusion_cpp()
-    offline_local_only = all(
-        (
-            _env_truthy("LOCAL_FILES_ONLY", "1"),
-            _env_truthy("HF_HUB_OFFLINE", "1"),
-            _env_truthy("TRANSFORMERS_OFFLINE", "1"),
-            _env_truthy("HF_DATASETS_OFFLINE", "1"),
-        )
+    # Strict gate: all known offline/local-only environment guards must be active.
+    offline_enforcement_enabled = all(
+        _is_env_enabled(name, default) for name, default in _OFFLINE_ENFORCEMENT_ENV_VARS
     )
     validation_gates = {
         "wan2_load_ready": wan2_verification["load_ready"],
         "stable_diffusion_cpp_ready": sdcpp["ready"],
-        "offline_local_only": offline_local_only,
+        "offline_local_only": offline_enforcement_enabled,
     }
     validation_gates["all_pass"] = all(validation_gates.values())
 
@@ -2209,7 +2246,7 @@ async def stable_diffusion_cpp() -> dict:
     (default: C:\\UI\\Experimental-UI_Reit\\models\\stable-diffusion.cpp).
 
     Readiness requires:
-      - at least one runtime binary in root/bin/build\\bin (sd.exe, stable-diffusion.exe, main.exe)
+      - at least one runtime binary in root, bin, or build\\bin (sd.exe, stable-diffusion.exe, main.exe)
       - at least one model file (.gguf, .safetensors, .ckpt, .bin) beneath SDCPP_DIR
 
     Override the verification root with the FLUX_SDCPP_DIR environment variable.
